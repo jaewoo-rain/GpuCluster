@@ -1,316 +1,308 @@
-# fGPU Prototype
+# fGPU
 
-A capstone / research prototype that mimics
-[Backend.AI](https://www.backend.ai/)'s **fractional GPU (fGPU)** capability:
-a single NVIDIA GPU is shared by multiple Docker containers, each receiving
-a fractional quota (e.g. `0.4` / `0.6`) of GPU memory.
-
-The mechanism is **`LD_PRELOAD`-based CUDA API hooking** — `libfgpu.so`
-is injected into each container, intercepts CUDA memory allocation calls
-across three layers (**Runtime** `cudaMalloc`/`cudaFree`,
-**Driver-classic** `cuMemAlloc_v2`/`cuMemFree_v2`, **VMM**
-`cuMemCreate`/`cuMemRelease`) sharing one per-process quota state, and
-also intercepts `cudaLaunchKernel` for *monitoring* (launch count) —
-not enforcement.
-
-> **This is not a production GPU virtualizer.** SM-level / hardware
-> isolation is out of scope; the target hardware (RTX 4060) does not
-> support MIG. Treat this as "cooperative quota enforcement at the CUDA
-> API boundary, plus a thin FastAPI session manager around it."
+> **GPU 한 장을 여러 사람이 비율대로 나눠 쓰는 시스템.** Backend.AI의 fractional GPU(fGPU) 핵심 메커니즘을 작은 코드로 재현한 프로토타입.
 
 ---
 
-## Architecture
+## 한 줄 소개
+
+NVIDIA GPU 1장에서 여러 Docker 컨테이너가 동시에 돌고, 각 컨테이너는 사전에 지정한 메모리 비율(예: `0.4`, `0.6`)을 넘는 GPU 메모리를 할당하지 못하도록 강제한다. `LD_PRELOAD`로 컨테이너 안에 작은 C 라이브러리(`libfgpu.so`)를 주입해서 `cudaMalloc` 같은 CUDA API 호출을 가로채는 방식.
+
+각 사용자는 브라우저에서 자기 **Jupyter Lab 세션**을 열어 PyTorch 코드를 작성할 수 있다.
 
 ```
-                   user (curl / minimal Web UI)
-                                │ HTTP
-                                ▼
-                    FastAPI backend (:8000)
-                       /sessions REST + SQLite persistence
-                                │ Docker SDK
-                                ▼
-                    Docker + nvidia-container-runtime
-                                │ docker run --gpus all
-                                ▼
-                       per-user containers
-                       LD_PRELOAD=/opt/fgpu/libfgpu.so
-                       FGPU_RATIO=<0..1>
-                                │
-                       NVIDIA driver → GPU
+사용자 A (브라우저)        사용자 B (브라우저)
+    │  ratio 0.4              │  ratio 0.6
+    ▼                         ▼
+  Jupyter Lab               Jupyter Lab
+  (4.6 GB까지 허용)          (7.2 GB까지 허용)
+    │                         │
+    └────────┬────────────────┘
+             ▼
+       NVIDIA GPU (12 GB)
 ```
 
-Two key design decisions:
+---
 
-1. **Backend and hook are decoupled.** The backend only delivers the
-   quota value as a container env var; the hook enforces it inside the
-   container. Swapping the backend for a multi-host scheduler (k8s, etc.)
-   does not require touching the hook.
-2. **Hook is per-container.** No cross-container communication. State
-   (`g_used`, `g_quota`, allocation list, lock, launch counter) is
-   process-local. `LD_PRELOAD` injects a fresh hook instance per
-   container.
+## 왜 만들었나
+
+- 딥러닝용 GPU는 비싸지만 작은 모델은 GPU 전체 메모리를 다 안 씀.
+- 한 GPU를 여러 사용자가 나눠 쓰면 활용률이 높아짐.
+- 단, 한 사용자의 메모리 사용이 다른 사용자를 망가뜨리지 않게 **격리**가 필요함.
+- 데이터센터 GPU(A100 등)는 하드웨어 격리(MIG)를 지원하지만 **consumer GPU (RTX 4070 등)는 미지원**.
+- 그래서 **소프트웨어로** quota를 강제하는 방식이 필요 → 이 프로젝트.
 
 ---
 
-## Hardware / OS prerequisites
+## 핵심 메커니즘 — 3단어로
 
-| Component | Tested on |
-|---|---|
-| GPU | NVIDIA RTX 4060 (8 GB) — any modern NVIDIA GPU should work |
-| OS | Ubuntu 22.04 (native or WSL2) |
-| NVIDIA driver | 535+ |
-| CUDA toolkit | 12.4 (host); 12.1 (PyTorch wheel) |
-| Docker | 24+ with `nvidia-container-toolkit` |
-| Python | 3.11+ |
+1. **Docker** — 사용자마다 격리된 컨테이너
+2. **LD_PRELOAD** — 컨테이너 시작 시 우리 라이브러리를 PyTorch보다 먼저 로드
+3. **API 가로채기 (hook)** — `cudaMalloc` 호출을 우리 코드가 먼저 받아 quota 검사
 
-> **Windows users:** native Windows is **not** supported (LD_PRELOAD is
-> Linux-only). Use WSL2 with Ubuntu 22.04. NVIDIA officially supports
-> CUDA-on-WSL2; Docker Desktop's WSL2 backend or `docker-ce` installed
-> inside WSL2 both work.
-
-> **First time on a fresh Linux machine?** See
-> [`LINUX_SETUP.md`](LINUX_SETUP.md) for an end-to-end setup +
-> per-stage verification runbook with PASS criteria and a
-> troubleshooting table.
+```
+PyTorch 가 cudaMalloc(2GB) 호출
+   │
+   ├─→ libfgpu.so 의 cudaMalloc 가 먼저 받음    ← LD_PRELOAD 효과
+   │     │
+   │     ├─ used + 2GB ≤ quota?   → 진짜 cudaMalloc 호출 → ALLOW
+   │     └─ used + 2GB >  quota?  → cudaErrorMemoryAllocation 반환 → DENY
+   │
+   └─→ PyTorch 는 진짜 GPU 메모리 부족인 줄 알고 OutOfMemoryError
+```
 
 ---
 
-## Quick start
+## 무엇이 들어있나
 
-### One-shot verification (recommended on a fresh machine)
+| 컴포넌트 | 무엇 | 위치 |
+|---|---|---|
+| **Hook** (`libfgpu.so`) | 컨테이너 안에서 CUDA API 가로채는 C 라이브러리 (~300줄) | [hook/](hook/) |
+| **베이스 이미지** | CUDA devel + 후크 검증 binary | [runtime-image/](runtime-image/) |
+| **PyTorch 이미지** | 위 + PyTorch + JupyterLab | [runtime-image-pytorch/](runtime-image-pytorch/) |
+| **백엔드** | FastAPI 세션 매니저 | [backend/](backend/) |
+| **UI** | 단일 HTML (vanilla JS, build step 없음) | [backend/app/static/index.html](backend/app/static/index.html) |
+| **빌드 / 검증 스크립트** | 단계별 PASS/FAIL 검증 | [scripts/](scripts/) |
+| **구조 설명서** | 파일/디렉토리 책임 매트릭스 | [ARCHITECTURE.md](ARCHITECTURE.md) |
 
+---
+
+## 빠른 시작
+
+### 사전 조건
+- Ubuntu 22.04 (네이티브 또는 WSL2)
+- NVIDIA 드라이버 535+ + nvidia-container-toolkit
+- CUDA 12.x (host)
+- Docker 24+
+- Python 3.11+
+
+### 빌드 + 실행
 ```bash
 chmod +x scripts/*.sh scripts/eval/*.sh runtime-image/entrypoint.sh
+
+# 1) 한 번만 빌드 (PyTorch 이미지 첫 빌드는 5~10분)
+./scripts/build_hook.sh                 # → build/libfgpu.so
+./scripts/build_image.sh                # → fgpu-runtime:stage2
+./scripts/build_pytorch_image.sh        # → fgpu-runtime-pytorch:stage4
+
+# 2) 백엔드 실행 (foreground, Ctrl+C 로 중단)
+./scripts/run_backend.sh                # uvicorn http://0.0.0.0:8000
+
+# 3) 브라우저
+#    http://localhost:8000/
+#    (외부 접속 시  http://<호스트 IP>:8000/)
+```
+
+---
+
+## UI 사용법
+
+브라우저에 접속하면 다음 화면이 뜸:
+
+1. **Create** 폼에서 mode 선택
+   - **batch** — 명령 1회 실행 후 종료 (테스트/벤치마크)
+   - **jupyter** — 브라우저에 Jupyter Lab 띄움 (인터랙티브 코딩)
+2. **ratio** (0 < r ≤ 1) 입력 — 메모리 비율
+3. **create** 클릭
+
+`jupyter` 모드면 새 탭에 Jupyter Lab이 자동으로 뜸. 거기서 PyTorch 코드 작성:
+
+```python
+import torch
+x = torch.empty(5*1024*1024*1024 // 4, dtype=torch.float32, device='cuda')
+# ratio=0.4 세션에선 OutOfMemoryError
+# ratio=0.7 세션에선 통과
+```
+
+세션을 두 개 동시에 띄워서 같은 코드를 양쪽에서 돌려보면 quota가 다르게 작동하는 게 보임.
+
+---
+
+## 데모 시나리오 — A/B 비교
+
+1. ratio `0.4` jupyter 세션 생성 → 자동으로 새 탭 열림
+2. ratio `0.7` jupyter 세션 생성 → 또 다른 새 탭
+3. 양쪽 노트북에 같은 코드 입력:
+
+```python
+import os, torch
+print("FGPU_RATIO =", os.environ.get("FGPU_RATIO"))
+free, total = torch.cuda.mem_get_info()
+print(f"quota = {total * float(os.environ['FGPU_RATIO']) / 1024**3:.2f} GiB")
+
+# 5 GiB 텐서 시도
+x = torch.empty(5*1024**3 // 4, dtype=torch.float32, device='cuda')
+print("OK")
+```
+
+→ ratio 0.4 세션에선 `OutOfMemoryError`, ratio 0.7 세션에선 `OK`.
+
+UI 의 Logs 패널에서 다음과 같은 hook 로그를 직접 확인:
+
+```
+[fgpu] init: ratio=0.400 quota_bytes=0
+[fgpu] quota lazily 계산: ratio=0.400 * total=12426543104 = 4970617241 bytes
+[fgpu] DENY  cudaMalloc size=5368709120 used=0 quota=4970617241    ← 차단
+```
+
+---
+
+## 주요 기능
+
+### Quota enforcement (Stage 1, 5-C, 6)
+4가지 CUDA API 표면을 hook함:
+- **Runtime API**: `cudaMalloc` / `cudaFree` (PyTorch 등이 가장 자주 쓰는 path)
+- **Driver API**: `cuMemAlloc_v2` / `cuMemFree_v2`
+- **VMM API**: `cuMemCreate` / `cuMemRelease`
+- **Launch counter**: `cudaLaunchKernel` (모니터링만, enforcement X)
+
+### Jupyter Lab 인터랙티브 모드 (Stage 10)
+- 세션마다 자체 Jupyter Lab 서버
+- 호스트 ephemeral port에 publish (32768~)
+- 세션마다 랜덤 토큰 발급 (`secrets.token_urlsafe(24)`)
+- 노트북 파일은 호스트의 `data/sessions/<id>/` 에 영속화 — 컨테이너 삭제해도 보존
+
+### Admission control (Stage 11)
+- 새 세션 생성 시 `sum(ratios) ≤ 1.0` 검사
+- 초과 시 HTTP 409 반환, `force=true` 옵션으로 우회 가능 (oversubscription 데모용)
+- `asyncio.Lock`으로 check-then-spawn 직렬화 → 동시 요청 race 방지
+- `GET /sessions/admission` 으로 GPU 별 capacity 조회
+
+### 영속성 (Stage 8)
+- 세션 record 는 SQLite (`data/sessions.db`)
+- 백엔드 재시작해도 세션 record 유지, docker daemon 과 자동 reconcile
+
+### 인증 (Stage 9 minimal)
+- `FGPU_API_TOKEN` 환경변수 설정 시 Bearer 토큰 인증 활성화
+- 미설정 시 인증 비활성 (개발 편의)
+
+### 멀티 GPU 지원
+- `gpu_index` 필드로 특정 GPU device 핀 가능
+- 코드는 멀티 GPU 호환, 단 1-GPU 호스트(RTX 4070)에선 의미 없음
+
+---
+
+## 동작 검증
+
+```bash
+# 단위 테스트 (docker / GPU 불필요)
+cd backend && pip install -e ".[dev]" && pytest -q
+# → 25 passed (Stage 8 store + Stage 11 admission)
+
+# 통합 테스트 (docker + GPU 필요)
+./scripts/eval/run_jupyter.sh           # Stage 10 Jupyter mode E2E
+./scripts/eval/run_admission.sh         # Stage 11 admission E2E + concurrency
+./scripts/eval/run_isolation.sh         # Stage 5-A 두 컨테이너 격리
+./scripts/eval/run_overhead.sh          # Stage 5-D hook 오버헤드 마이크로벤치
+
+# 전체 stage 자동 검증 (한 번에)
 ./scripts/run_all_tests.sh
 ```
 
-Builds everything that's missing, runs every stage's verification, and
-prints a `PASS / FAIL` summary. Per-step logs land under
-`experiments/runall_<TS>/`. First run takes ~10 minutes (PyTorch image
-build); later runs ~5 minutes. Backend is spawned + killed inside the
-script — for actual UI / demo use see "Daily use" below.
+각 검증 스크립트는 `experiments/<name>_<timestamp>/summary.txt` 에 PASS/FAIL 판정 + 원시 데이터 저장.
 
-### Daily use (running the backend + browser UI)
+---
+
+## 외부 접속 (LAN)
+
+호스트의 다른 컴퓨터에서 접속하려면:
 
 ```bash
-# 1) build the hook .so (only needed once or after editing the hook)
-./scripts/build_hook.sh                 # → build/libfgpu.so
+# 1) 방화벽 열기
+sudo ufw allow 8000/tcp                         # 백엔드
+sudo ufw allow 32768:60999/tcp                  # Jupyter ephemeral 포트 범위
 
-# 2) build the runtime base image (compiles bench + smoke binaries)
-./scripts/build_image.sh                # → fgpu-runtime:stage2
-
-# 3) build the PyTorch variant (~5 GB wheel pull on first run)
-./scripts/build_pytorch_image.sh        # → fgpu-runtime-pytorch:stage4
-
-# 4) run the backend (foreground; Ctrl+C to stop)
-./scripts/run_backend.sh                # uvicorn on :8000
-
-# 5) sanity-check via curl (in another shell)
-./scripts/smoke_test_api.sh             # POST → GET → logs → DELETE
+# 2) 인증 켜는 것 권장 (LAN 노출이면 필수)
+FGPU_API_TOKEN=$(openssl rand -hex 16) ./scripts/run_backend.sh
+# 출력된 토큰 메모, UI 상단 토큰 칸에 입력 후 save
 ```
 
-The bundled web UI at `http://localhost:8000/` lets you create / inspect /
-delete sessions interactively, including a `gpu_index` field for
-multi-GPU device pinning and a token toolbar for bearer-auth mode.
+다른 PC 브라우저: `http://<호스트 IP>:8000/`
 
-> Accessing port 8000 from a different machine? Open the firewall on
-> the host: `sudo ufw allow 8000/tcp`.
+UI 의 jupyter URL 은 `location.hostname` 기반으로 자동 조립되므로 외부 접속도 자연스럽게 작동.
 
 ---
 
-## What's implemented
+## 한계 (의도된 것)
 
-| Stage | Deliverable |
-|---|---|
-| 1 | Runtime API hook — `cudaMalloc`, `cudaFree`. Quota lazy-computed from `cudaMemGetInfo` × ratio |
-| 2 | Containerized runtime image, hook mounted at runtime (not baked) |
-| 3 | FastAPI backend — `/sessions` REST CRUD, status auto-reconcile from docker daemon |
-| 4 | PyTorch integration verified (`PYTORCH_NO_CUDA_MEMORY_CACHING=1`) |
-| 5-A | Concurrent isolation experiment automation (two containers, different ratios, nvidia-smi capture, PASS/FAIL verdict) |
-| 5-B | Minimal vanilla-JS web UI |
-| 5-C | Driver API hook — `cuMemAlloc_v2`, `cuMemFree_v2`. Reentrancy guard prevents double-counting |
-| 5-D | Overhead microbenchmark — `cudaMalloc` / `cudaFree` latency table (mean / p50 / p99) |
-| 7 | `cudaLaunchKernel` hook — lock-free launch counter, periodic + atexit dumps |
-| 8 | SQLite session persistence + `asyncio.to_thread` wrapping of all blocking docker SDK / sqlite calls |
-| 5-A ext | Launch counter ↔ `nvidia-smi` memory time-series correlation experiment |
-| 6 | VMM API hook — `cuMemCreate` / `cuMemRelease` (modern allocation path) |
-| 9 minimal | Bearer token auth (`FGPU_API_TOKEN`) + multi-GPU device pinning (`gpu_index`) |
+| 한계 | 영향 | 대응 |
+|---|---|---|
+| **SM/compute 격리 없음** | 한 컨테이너가 GPU 100% 차지 못 막음 | MIG 필요 (consumer GPU 미지원), MPS 는 격리 모델 깨짐 |
+| **정적 링크 binary 우회** | `nvcc -cudart=static` 컴파일된 코드는 hook 우회 | "Cooperative threat model" — 문서화된 한계 |
+| **`cudaMallocAsync` / UVM 미훅** | stream-ordered allocator 사용 시 우회 | 표면 추가 가능, 현재 미구현 |
+| **CUDA 컨텍스트 ~150 MiB 오버헤드** | 세션마다 quota 외 추가 점유 | driver 내부 할당이라 hook 못 봄 |
+| **단일 호스트** | 컴퓨터 1대만 | Backend.AI 처럼 multi-host 가려면 manager-agent 분리 필요 |
+| **인증 단순함** | 정적 토큰 1개, RBAC 없음 | OAuth + 사용자 그룹 추가 가능 (stage 9 full 의 영역) |
 
 ---
 
-## Limitations (also detailed in `description.md`)
+## Backend.AI 와의 관계
 
-- **No SM isolation.** Hooks intercept memory APIs and kernel launches
-  but cannot bound *compute time*. Two containers contend on the same
-  SMs; we measure but don't enforce. SM isolation requires MIG (data
-  center GPUs only) or MPS (single-tenant only).
-- **Cooperative threat model.** Statically linked binaries
-  (`nvcc -cudart=static`) bypass `LD_PRELOAD`. Stage 5-C closes the
-  `dlopen("libcuda.so")` surface but not the static-link one. This is
-  documented as an out-of-scope limitation, not a bug.
-- **PyTorch caching allocator masks per-call quota.** When PyTorch's
-  caching is on (default), the first big slab is the only real
-  `cudaMalloc`, so per-tensor quota effects vanish. Set
-  `PYTORCH_NO_CUDA_MEMORY_CACHING=1` (the PyTorch image does this by
-  default) to get accurate per-allocation observation.
-- **Driver/VMM API coverage is partial.** `cuMemAlloc_v2`/`cuMemFree_v2`
-  (Stage 5-C) and `cuMemCreate`/`cuMemRelease` (Stage 6) are hooked,
-  but `cuMemAllocAsync` (stream-ordered) and `cuMemAllocManaged` (UVM)
-  are not. Workloads that go exclusively through those paths bypass the
-  quota.
-- **Single host.** SQLite store is single-node. `SessionStore` is the
-  abstraction boundary — replacing it with Redis/Postgres for
-  multi-host is the natural Stage 9 (full) direction; `SessionManager`
-  would not need to change. Stage 9 minimal in this prototype only
-  covers single-host bearer auth + per-session GPU device pinning.
+이 프로젝트는 [Backend.AI](https://www.backend.ai/) 의 fGPU 기능을 **개념적으로 재현**한 것이다.
+
+**같은 부분**:
+- LD_PRELOAD CUDA hook
+- 컨테이너 단위 격리
+- ratio 기반 메모리 분할
+- cooperative threat model
+
+**Backend.AI 가 추가로 갖춘 것** (이 프로젝트엔 없음):
+- 멀티 호스트 cluster scheduler (Sokovan)
+- 분산 메타데이터 (PostgreSQL + Redis)
+- vfolders (분산 스토리지 가상화)
+- 사용자/그룹/도메인 RBAC
+- 다중 GPU 벤더 (NVIDIA / AMD / Intel / Habana)
+- 큐레이션된 이미지 카탈로그
+- Grafana / Prometheus 통합
+- JupyterHub-style 게이트웨이
+- `cudaMallocAsync`, `cuMemAllocAsync`, UVM 등 추가 API hook
+
+**즉**: enforcement 메커니즘은 동일하지만 인프라 규모가 다르다. 이 프로토타입은 **fGPU 의 본질적 메커니즘을 작은 코드로 시연**하는 것이 목적.
 
 ---
 
-## Reproducing the paper data
-
-Each experiment writes its artifacts under `experiments/<name>_<timestamp>/`.
-`experiments/` is git-ignored.
-
-`./scripts/run_all_tests.sh` already runs every step below as part of
-its verification pass and dumps the same artifacts. The list below is
-for manual / one-stage-at-a-time invocation (debugging a single failed
-stage, sweeping ratios, etc.):
-
-```bash
-# memory quota — host-only (Stage 1)
-./scripts/run_test.sh                                  # baseline + hooked
-
-# memory quota — in container (Stage 2)
-./scripts/run_in_container.sh
-
-# memory quota — Driver API only (Stage 5-C)
-./scripts/run_driver_in_container.sh
-
-# memory quota — PyTorch (Stage 4)
-./scripts/run_pytorch_in_container.sh
-FGPU_RATIO=0.6 ./scripts/run_pytorch_in_container.sh
-
-# launch counter (Stage 7)
-./scripts/run_launch_in_container.sh
-
-# VMM API quota (Stage 6)
-./scripts/run_vmm_in_container.sh
-
-# overhead microbench (Stage 5-D)
-./scripts/build_image.sh
-./scripts/eval/run_overhead.sh
-# → experiments/overhead_<TS>/summary.{csv,txt}
-
-# concurrent isolation (Stage 5-A) — backend must be running
-./scripts/run_backend.sh &
-./scripts/eval/run_isolation.sh
-# → experiments/isolation_<TS>/summary.txt + nvidia-smi CSV
-
-# launch ↔ memory time-series correlation (5-A extension)
-FGPU_LAUNCH_LOG_EVERY=500 ./scripts/run_backend.sh &
-./scripts/eval/run_correlation.sh
-# → experiments/correlation_<TS>/correlation.csv
-```
-
-The correlation CSV is long-format (`t_seconds, container, launch_count,
-used_memory_mib`); pivot in pandas / Excel for plotting. A pandas pivot
-example is printed at the end of `run_correlation.sh`.
-
----
-
-## Repository layout
-
-See [`CLAUDE.md`](CLAUDE.md) for an authoritative file-by-file index, and
-[`description.md`](description.md) (Korean) for the full architectural
-rationale, design alternatives, and limitation analysis intended as the
-paper's source material.
-
-Top-level:
+## 폴더 구조
 
 ```
-hook/             LD_PRELOAD hook source + smoke / bench binaries (CUDA C/C++)
-runtime-image/    Base Docker image (CUDA devel, smoke binaries pre-compiled)
-runtime-image-pytorch/  PyTorch variant on top of the base
-backend/          FastAPI session manager (Python)
-scripts/          Build + run + evaluation drivers
-scripts/eval/     Paper-relevant experiment automation (isolation, overhead,
-                  correlation)
-experiments/      (gitignored) experiment outputs
-build/            (gitignored) built artifacts
-data/             (gitignored) SQLite session store
+fgpu/
+├── README.md                 ← 이 파일
+├── ARCHITECTURE.md           파일 / 디렉토리 책임 매트릭스 + 데이터 흐름
+├── description.md            장문 설계 의도 (Korean)
+├── CLAUDE.md                 AI agent 작업 가이드
+├── LINUX_SETUP.md            fresh 머신 세팅 runbook
+│
+├── hook/                     LD_PRELOAD 후크 (C)
+├── runtime-image/            베이스 컨테이너 (CUDA devel)
+├── runtime-image-pytorch/    PyTorch + JupyterLab 변형
+├── backend/                  FastAPI 세션 매니저
+├── scripts/                  빌드 + 실행 + 검증 드라이버
+│
+├── build/                    (gitignored) libfgpu.so 등 빌드 산출물
+├── data/                     (gitignored) SQLite + jupyter 워크스페이스
+└── experiments/              (gitignored) 검증 스크립트 산출물
 ```
+
+자세한 구조 설명은 [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ---
 
-## Tests
+## 환경변수 reference
 
-A small pytest suite covers the Stage 8 SQLite session store
-(`backend/tests/test_session_store.py`). It does **not** require docker
-or a GPU.
-
-```bash
-cd backend
-pip install -e ".[dev]"
-pytest
-```
-
-The full backend → docker → GPU integration path is exercised by the
-shell scripts under `scripts/eval/` (run on actual hardware).
-
----
-
-## Authentication (optional)
-
-By default the API runs unauthenticated for ease of development. To turn
-on bearer auth, set `FGPU_API_TOKEN` before starting the backend:
-
-```bash
-FGPU_API_TOKEN=secret-dev-token ./scripts/run_backend.sh
-
-# requests must now include Authorization
-curl -X POST http://localhost:8000/sessions \
-    -H 'Authorization: Bearer secret-dev-token' \
-    -H 'Content-Type: application/json' \
-    -d '{"ratio": 0.4}'
-```
-
-`/healthz` and `/` (UI) remain public so health checks and demos still
-work. Token comparison uses `hmac.compare_digest` to defeat timing
-attacks. There is no token rotation, refresh, or RBAC — that's full
-Stage 9 future work.
-
-## Multi-GPU
-
-`SessionCreate` accepts an optional `gpu_index` field. `None` (default)
-exposes every GPU to the container; an integer pins it to that device:
-
-```bash
-curl -X POST http://localhost:8000/sessions \
-    -H 'Content-Type: application/json' \
-    -d '{"ratio": 0.4, "gpu_index": 1}'
-```
-
-The hook inside the container then sees only the pinned GPU and computes
-quota against its memory total.
+| 이름 | 기본값 | 용도 |
+|---|---|---|
+| `FGPU_API_TOKEN` | `` (비활성) | Bearer 토큰 인증 |
+| `FGPU_RUNTIME_IMAGE` | `fgpu-runtime:stage2` | 기본 docker 이미지 |
+| `FGPU_HOST_HOOK_PATH` | `<repo>/build/libfgpu.so` | host 의 hook .so 경로 |
+| `FGPU_DB_PATH` | `<repo>/data/sessions.db` | SQLite 경로 |
+| `FGPU_WORKSPACE_ROOT` | `<repo>/data/sessions` | jupyter 워크스페이스 root |
+| `FGPU_PUBLIC_HOST` | `localhost` | jupyter URL 의 호스트명 (UI 는 `location.hostname` 우선) |
+| `FGPU_BACKEND_PORT` | `8000` | uvicorn 포트 |
+| `FGPU_BACKEND_HOST` | `0.0.0.0` | uvicorn bind 주소 |
+| `FGPU_LAUNCH_LOG_EVERY` | `1000` | hook 의 launch counter dump 주기 (0 = off) |
+| `PYTORCH_NO_CUDA_MEMORY_CACHING` | `1` (이미지 default) | PyTorch caching off (hook quota 정확성) |
 
 ---
 
-## Status
+## 라이선스
 
-Capstone / research prototype. Stages 1 through 8, the 5-A correlation
-extension, Stage 6 (VMM API hook), and Stage 9 minimal (bearer auth +
-multi-GPU device pinning) are implemented and self-verified. Stage 9
-full (Kubernetes scheduler, Redis store, RBAC) and additional VMM paths
-(`cuMemAllocAsync`, `cuMemAllocManaged`) are out of scope for the
-current write-up but the structure is intentionally extensible toward
-them.
-
-For questions about the design, start with `description.md`. For build
-details and per-stage acceptance criteria, see `CLAUDE.md`.
-
----
-
-## License
-
-MIT — see [`LICENSE`](LICENSE). © 2026 양재우 (Jaewoo Yang).
+MIT — see [LICENSE](LICENSE). © 2026 양재우 (Jaewoo Yang).

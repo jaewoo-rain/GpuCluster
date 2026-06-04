@@ -48,6 +48,11 @@ class SessionCreate(BaseModel):
         default=None, ge=0,
         description="멀티-GPU 호스트에서 특정 device 만 노출. None 이면 모든 GPU.",
     )
+    compute_ratio: Optional[float] = Field(
+        default=None, gt=0.0, le=1.0,
+        description="Stage 12: 컴퓨트 시간 비율 (0.0 < r ≤ 1.0). "
+                    "설정 시 duty-cycle throttle 활성화. None 이면 throttle off.",
+    )
     force: bool = Field(
         default=False,
         description="Stage 11 admission control 우회. True 이면 sum(ratios) > 1.0 "
@@ -69,6 +74,7 @@ class Session(BaseModel):
     created_at: datetime
     exit_code: Optional[int] = None
     gpu_index: Optional[int] = None  # Stage 9 minimal — 사용된 GPU device id
+    compute_ratio: Optional[float] = None  # Stage 12 — duty-cycle throttle ratio
     # Stage 10 — jupyter 모드일 때만 채워짐.
     host_port: Optional[int] = None
     jupyter_token: Optional[str] = None

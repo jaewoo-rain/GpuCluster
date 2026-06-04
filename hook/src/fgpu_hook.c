@@ -1,5 +1,5 @@
 /* =====================================================================
- * fgpu_hook.c  —  LD_PRELOAD 기반 CUDA API 후킹 (Stage 1 + Stage 5-C)
+ * fgpu_hook.c  —  LD_PRELOAD 기반 CUDA API 후킹 (Stage 1 ~ Stage 12)
  *
  * 이 파일은 무엇을 하는가?
  * ---------------------------------------------------------------------
@@ -10,16 +10,18 @@
  *   - Runtime API (libcudart):  cudaMalloc, cudaFree
  *   - Driver  API (libcuda):    cuMemAlloc_v2, cuMemFree_v2
  *   - VMM     API (libcuda):    cuMemCreate, cuMemRelease (Stage 6)
- *   - Kernel  launch monitor:   cudaLaunchKernel (Stage 7, 카운터만)
+ *   - Kernel  launch monitor:   cudaLaunchKernel (Stage 7, 카운터 + Stage 12 throttle)
  *
  * 두 alloc layer 모두 같은 quota state (g_used, g_quota, g_allocs, g_lock)
  * 를 공유한다. 따라서 사용자가 어느 쪽 API 를 쓰든 quota 가 함께
  * 강제된다.
  *
- * Kernel launch hook 은 quota 를 *시행* 하지 않는다 — 단지 호출 횟수를
- * 누적해 process 별 GPU 활동도(temporal share) 의 proxy 를 제공.
- * 진짜 SM 격리는 MIG/MPS 가 필요하므로, 본 프로토타입은 "memory quota
- * + launch frequency monitor" 두 축으로 한정.
+ * Stage 12 추가: Duty-cycle 기반 GPU 컴퓨트 시분할.
+ *   cudaLaunchKernel 호출 시 시간 윈도우(기본 100ms) 내 ratio 비율만큼만
+ *   launch 를 허용하고, 초과 시 nanosleep 으로 대기 삽입. launch 를
+ *   드롭하지 않고 delay 만 넣어 cooperative throttling 구현.
+ *   진짜 SM 격리는 MIG/MPS 가 필요하므로, 본 프로토타입은 "memory quota
+ *   + duty-cycle compute throttle" 두 축으로 협력적 제어.
  *
  * 어떻게 가능한가? — LD_PRELOAD 한 줄 요약
  * ---------------------------------------------------------------------
@@ -70,9 +72,10 @@
 #include <stdio.h>      /* fprintf, stderr */
 #include <stdlib.h>     /* getenv, atof, strtoull, malloc, free */
 #include <string.h>     /* (현재는 미사용이지만 향후 strncmp 등 대비) */
-#include <stdint.h>     /* uintptr_t — CUdeviceptr ↔ void* 변환 */
+#include <stdint.h>     /* uintptr_t, int64_t — CUdeviceptr ↔ void* 변환 */
 #include <dlfcn.h>      /* dlsym, RTLD_NEXT, dlerror */
 #include <pthread.h>    /* pthread_mutex_t — 멀티스레드 안전성 */
+#include <time.h>       /* clock_gettime, nanosleep, CLOCK_MONOTONIC (Stage 12) */
 #include <cuda_runtime_api.h>  /* cudaError_t, cudaMemGetInfo, cudaSuccess 등 */
 #include <cuda.h>              /* CUresult, CUdeviceptr, CUDA_SUCCESS 등 (Driver API) */
 
@@ -172,6 +175,25 @@ static size_t       g_launch_count     = 0;
 static unsigned int g_launch_log_every = 1000;
 static int          g_atexit_registered = 0;
 
+/* =====================================================================
+ * (2-quater) Stage 12: Duty-cycle throttle 상태
+ *
+ *   g_throttle_enable    : FGPU_THROTTLE_ENABLE (0/1). 0 이면 throttle off.
+ *   g_compute_ratio      : 컴퓨트 시간 비율 (0.0~1.0). 미설정 시 g_ratio 사용.
+ *   g_window_ns          : duty-cycle 윈도우 크기 (ns). 기본 100ms.
+ *   g_window_start_ns    : 현재 윈도우 시작 시점 (CLOCK_MONOTONIC ns).
+ *                          atomic load/store. 두 스레드가 동시에 리셋해도
+ *                          둘 다 "지금" 으로 설정하므로 무해.
+ *   g_throttle_count     : 총 sleep 횟수 — 통계용.
+ *   g_throttle_log_every : N 번 sleep 마다 로그 출력. 0 = off.
+ * ===================================================================== */
+static int          g_throttle_enable    = 0;
+static double       g_compute_ratio      = 1.0;
+static int64_t      g_window_ns          = 100000000LL;  /* 100ms default */
+static int64_t      g_window_start_ns    = 0;
+static size_t       g_throttle_count     = 0;
+static unsigned int g_throttle_log_every = 100;
+
 static void fgpu_launch_atexit_dump(void) {
     /* atexit 호출 시점엔 다른 thread 가 hook 진입 중일 수 있으나,
      * 단일 size_t read 라 race 가 데이터 손상으로 이어지진 않음. */
@@ -179,6 +201,13 @@ static void fgpu_launch_atexit_dump(void) {
     fprintf(stderr,
             "[fgpu] exit summary: total cudaLaunchKernel = %zu\n",
             n);
+    /* Stage 12: throttle 통계 */
+    if (g_throttle_enable) {
+        size_t tc = __atomic_load_n(&g_throttle_count, __ATOMIC_RELAXED);
+        fprintf(stderr,
+                "[fgpu] exit summary: total throttle sleeps = %zu\n",
+                tc);
+    }
 }
 
 
@@ -309,6 +338,37 @@ static void fgpu_init_locked(void) {
         g_launch_log_every = (v >= 0) ? (unsigned int)v : 1000;
     }
 
+    /* (d-bis) Stage 12: duty-cycle throttle 환경변수.
+     *   FGPU_THROTTLE_ENABLE  : 0/1 (기본 0)
+     *   FGPU_COMPUTE_RATIO    : 컴퓨트 시간 비율. 미설정 → g_ratio 사용.
+     *   FGPU_WINDOW_MS        : 윈도우 크기 ms (기본 100)
+     *   FGPU_THROTTLE_LOG_EVERY : sleep N 회마다 로그 (기본 100, 0=off) */
+    const char *te_env = getenv("FGPU_THROTTLE_ENABLE");
+    if (te_env) g_throttle_enable = (atoi(te_env) != 0);
+
+    const char *cr_env = getenv("FGPU_COMPUTE_RATIO");
+    if (cr_env) {
+        g_compute_ratio = atof(cr_env);
+        if (g_compute_ratio <= 0.0 || g_compute_ratio > 1.0)
+            g_compute_ratio = 1.0;
+    } else {
+        /* FGPU_COMPUTE_RATIO 미설정 → 메모리 ratio 와 동일 사용 */
+        g_compute_ratio = g_ratio;
+    }
+
+    const char *wm_env = getenv("FGPU_WINDOW_MS");
+    if (wm_env) {
+        long wm = strtol(wm_env, NULL, 10);
+        if (wm > 0)
+            g_window_ns = (int64_t)wm * 1000000LL;
+    }
+
+    const char *tle_env = getenv("FGPU_THROTTLE_LOG_EVERY");
+    if (tle_env) {
+        long v = strtol(tle_env, NULL, 10);
+        g_throttle_log_every = (v >= 0) ? (unsigned int)v : 100;
+    }
+
     /* (e) atexit 으로 누적 launch 수의 최종 dump 등록 — 한 번만. */
     if (!g_atexit_registered) {
         atexit(fgpu_launch_atexit_dump);
@@ -330,6 +390,11 @@ static void fgpu_init_locked(void) {
     fprintf(stderr,
             "[fgpu] init: launch_log_every=%u (0=off)\n",
             g_launch_log_every);
+    fprintf(stderr,
+            "[fgpu] init: throttle=%s compute_ratio=%.3f window_ms=%ld\n",
+            g_throttle_enable ? "on" : "off",
+            g_compute_ratio,
+            (long)(g_window_ns / 1000000LL));
 
     g_inited = 1;
 }
@@ -706,6 +771,49 @@ cudaError_t cudaLaunchKernel(const void *func, dim3 gridDim, dim3 blockDim,
     g_in_hook = 1;
     /* lock-free atomic 증가 — RELAXED 로 충분 (단순 monotonic counter). */
     size_t count = __atomic_add_fetch(&g_launch_count, 1, __ATOMIC_RELAXED);
+
+    /* Stage 12: duty-cycle throttle — launch 전에 시간 확인.
+     * 윈도우(기본 100ms) 내에서 compute_ratio × window 시간만 launch 허용,
+     * 나머지는 nanosleep 으로 대기. launch 자체는 드롭하지 않음 —
+     * real_cudaLaunchKernel 은 항상 호출된다. */
+    if (g_throttle_enable && g_compute_ratio < 1.0) {
+        struct timespec now_ts;
+        clock_gettime(CLOCK_MONOTONIC, &now_ts);
+        int64_t now_ns = (int64_t)now_ts.tv_sec * 1000000000LL + now_ts.tv_nsec;
+
+        int64_t ws = __atomic_load_n(&g_window_start_ns, __ATOMIC_RELAXED);
+        if (ws == 0) {  /* 첫 호출 → 첫 윈도우 시작 */
+            __atomic_store_n(&g_window_start_ns, now_ns, __ATOMIC_RELAXED);
+            ws = now_ns;
+        }
+
+        int64_t elapsed = now_ns - ws;
+        if (elapsed >= g_window_ns) {  /* 윈도우 만료 → 리셋 */
+            __atomic_store_n(&g_window_start_ns, now_ns, __ATOMIC_RELAXED);
+            elapsed = 0;
+        }
+
+        int64_t active_limit = (int64_t)(g_compute_ratio * (double)g_window_ns);
+        if (elapsed >= active_limit) {  /* active 시간 초과 → sleep */
+            int64_t sleep_ns = g_window_ns - elapsed;
+            struct timespec sleep_ts = {
+                .tv_sec  = sleep_ns / 1000000000LL,
+                .tv_nsec = sleep_ns % 1000000000LL,
+            };
+            nanosleep(&sleep_ts, NULL);
+
+            /* sleep 후 새 윈도우 시작 */
+            clock_gettime(CLOCK_MONOTONIC, &now_ts);
+            __atomic_store_n(&g_window_start_ns,
+                (int64_t)now_ts.tv_sec * 1000000000LL + now_ts.tv_nsec,
+                __ATOMIC_RELAXED);
+
+            size_t tc = __atomic_add_fetch(&g_throttle_count, 1, __ATOMIC_RELAXED);
+            if (g_throttle_log_every > 0 && (tc % g_throttle_log_every) == 0)
+                fprintf(stderr, "[fgpu] THROTTLE sleep=%ldms count=%zu\n",
+                        (long)(sleep_ns / 1000000L), tc);
+        }
+    }
 
     cudaError_t err = real_cudaLaunchKernel(func, gridDim, blockDim,
                                             args, sharedMem, stream);

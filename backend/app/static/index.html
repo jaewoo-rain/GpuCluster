@@ -104,6 +104,9 @@
       <label>gpu_index (멀티-GPU, 빈 값 = 모든 GPU)
         <input name="gpu_index" type="number" min="0" step="1" placeholder="" />
       </label>
+      <label>compute_ratio (Stage 12 throttle, 빈 값 = off)
+        <input name="compute_ratio" type="number" step="0.05" min="0.05" max="1" placeholder="" />
+      </label>
       <label>image
         <input name="image" id="image-input" class="image" value="fgpu-runtime-pytorch:stage4" />
       </label>
@@ -365,11 +368,13 @@ $('#create-form').addEventListener('submit', async (ev) => {
   const image = String(fd.get('image') || '').trim();
   const cmdStr = String(fd.get('command') || '').trim();
   const gpuStr = String(fd.get('gpu_index') || '').trim();
+  const crStr = String(fd.get('compute_ratio') || '').trim();
   const force = $('#force-input').checked;
   const payload = { ratio, mode };
   if (image) payload.image = image;
   if (mode !== 'jupyter' && cmdStr) payload.command = cmdStr.split(/\s+/);
   if (gpuStr !== '') payload.gpu_index = Number(gpuStr);
+  if (crStr !== '') payload.compute_ratio = Number(crStr);
   if (force) payload.force = true;
   try {
     const created = await jpost('/sessions', payload);

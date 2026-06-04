@@ -72,6 +72,7 @@ async def create_session(
             quota_bytes=body.quota_bytes,
             image=body.image,
             gpu_index=body.gpu_index,
+            compute_ratio=body.compute_ratio,
             force=body.force,
         )
     except AdmissionDenied as e:

@@ -14,13 +14,14 @@ The owner builds this in numbered stages and verifies each stage before moving o
 
 Each stage's deliverable must be buildable and verifiable on its own.
 
-## Repository layout (current, Stage 6 + Stage 9 minimal + Stage 10 interactive + Stage 11 admission + run-all orchestrator)
+## Repository layout (current, Stage 6 + Stage 9 minimal + Stage 10 interactive + Stage 11 admission + Stage 12 throttle + run-all orchestrator)
 
-- `hook/src/fgpu_hook.c` — the LD_PRELOAD hook. C, no C++ deps. Heavily commented in Korean for the owner. Hooks four things: Runtime alloc API (`cudaMalloc`/`cudaFree`), Driver alloc API (`cuMemAlloc_v2`/`cuMemFree_v2`, Stage 5-C), VMM API (`cuMemCreate`/`cuMemRelease`, Stage 6 — quota charged at physical alloc, VA reservation/mapping not hooked), and `cudaLaunchKernel` for monitoring (Stage 7). All alloc layers share `g_used`/`g_quota`/`g_lock`/`g_allocs`. A per-thread `__thread g_in_hook` flag prevents double-counting if one alloc API delegates to another and re-enters our hooks. The launch hook does NOT enforce quota — it only counts via lock-free `__atomic_fetch_add` and dumps the cumulative count every `FGPU_LAUNCH_LOG_EVERY` calls (default 1000) plus once on `atexit`.
+- `hook/src/fgpu_hook.c` — the LD_PRELOAD hook. C, no C++ deps. Heavily commented in Korean for the owner. Hooks four things: Runtime alloc API (`cudaMalloc`/`cudaFree`), Driver alloc API (`cuMemAlloc_v2`/`cuMemFree_v2`, Stage 5-C), VMM API (`cuMemCreate`/`cuMemRelease`, Stage 6 — quota charged at physical alloc, VA reservation/mapping not hooked), and `cudaLaunchKernel` for monitoring + throttle (Stage 7 + Stage 12). All alloc layers share `g_used`/`g_quota`/`g_lock`/`g_allocs`. A per-thread `__thread g_in_hook` flag prevents double-counting if one alloc API delegates to another and re-enters our hooks. The launch hook counts via lock-free `__atomic_fetch_add` (Stage 7) and optionally applies duty-cycle throttling (Stage 12): within a time window (default 100ms), only `compute_ratio × window` of wall-clock time allows launches to pass immediately; beyond that, `nanosleep` delays the caller until the next window. Launches are never dropped.
 - `hook/tests/test_alloc.cu` — tiny standalone CUDA program that triggers `cudaMalloc` twice (256 MiB then 6 GiB) so a `FGPU_RATIO=0.4` run produces one ALLOW + one DENY in the log.
 - `hook/tests/bench_alloc.cu` — Stage 5-D microbenchmark. For each size in `BENCH_SIZES_MIB` (default `16,64,256,1024`), runs `BENCH_WARMUP` warmup cycles then `BENCH_N` measured `cudaMalloc`/`cudaFree` pairs, timed with `clock_gettime(CLOCK_MONOTONIC)`. Streams CSV (`size_mib,iter,malloc_ns,free_ns`) on stdout; `[bench]` meta and `[fgpu]` hook lines go to stderr.
 - `hook/tests/test_driver_alloc.cu` — Stage 5-C smoke. Uses Driver API only (`cuInit`, `cuCtxCreate`, `cuMemAlloc_v2`, `cuMemFree_v2`) — Runtime API is deliberately untouched so the driver-layer hook is verified in isolation. Tries 256 MiB then 6 GiB so a `FGPU_RATIO=0.4` run yields ALLOW + DENY at the driver layer.
 - `hook/tests/test_launch.cu` — Stage 7 smoke. Launches a tiny noop kernel `PYTEST_LAUNCH_N` times (default 1000). Used to verify `cudaLaunchKernel` is intercepted and counted; quota is irrelevant here (the kernel does ~no allocation).
+- `hook/tests/test_throttle.cu` — Stage 12 smoke. Launches noop kernel N times (default 5000) in a tight loop, measures wall-clock elapsed time and reports launches/sec. Used with duty-cycle throttle to verify throughput scales with `FGPU_COMPUTE_RATIO`.
 - `hook/tests/test_vmm_alloc.cu` — Stage 6 smoke. Uses VMM API only (`cuInit`, `cuCtxCreate`, `cuMemGetAllocationGranularity`, `cuMemCreate`, `cuMemRelease`) — Runtime/Driver-classic allocs are deliberately untouched so the VMM-layer hook is verified in isolation. Tries 256 MiB then 6 GiB so a `FGPU_RATIO=0.4` run yields ALLOW + DENY at the VMM layer.
 - `runtime-image/Dockerfile` — `nvidia/cuda:*-devel-ubuntu22.04` base image with `test_alloc` pre-compiled at `/opt/fgpu/test_alloc`. Hook .so is *mounted in at runtime*, not baked.
 - `runtime-image/entrypoint.sh` — logs FGPU env + verifies hook .so existence, then `exec "$@"`. Default CMD runs the bundled test.
@@ -41,6 +42,7 @@ Each stage's deliverable must be buildable and verifiable on its own.
 - `scripts/run_in_container.sh` — runs the bundled test inside the container twice (baseline + with hook mounted via `-v`).
 - `scripts/run_driver_in_container.sh` — Stage 5-C verification. Same baseline+hooked pattern as `run_in_container.sh`, but the entrypoint is `/opt/fgpu/test_driver_alloc` so only the driver hook is exercised.
 - `scripts/run_launch_in_container.sh` — Stage 7 verification. baseline+hooked of `test_launch`, with `FGPU_LAUNCH_LOG_EVERY=100` so the hooked run prints periodic launch counter dumps plus a final `[fgpu] exit summary` line.
+- `scripts/run_throttle_in_container.sh` — Stage 12 verification. Three runs: baseline (no hook), hooked with throttle OFF, hooked with throttle ON (default ratio=0.4, window=100ms). Verifies throughput drops proportionally with `FGPU_COMPUTE_RATIO`.
 - `scripts/run_vmm_in_container.sh` — Stage 6 verification. Same baseline+hooked pattern as `run_driver_in_container.sh`, but the entrypoint is `/opt/fgpu/test_vmm_alloc` so only the VMM hook is exercised.
 - `scripts/run_backend.sh` — venv + `pip install -e .` + uvicorn on `:8000`. Sets `FGPU_HOST_HOOK_PATH` from `<repo>/build/libfgpu.so`.
 - `scripts/smoke_test_api.sh` — curl-based one-shot test of the full API loop (create → get → logs → delete).
@@ -55,6 +57,7 @@ Each stage's deliverable must be buildable and verifiable on its own.
 - `scripts/eval/run_overhead.sh` — Stage 5-D driver. Runs `bench_alloc` inside the runtime container twice (baseline / hooked with `FGPU_RATIO=0.95`), captures CSVs, computes per-size mean/p50/p99 of `cudaMalloc` and `cudaFree` latency in μs, emits `summary.csv` + paper-friendly `summary.txt` markdown table under `experiments/overhead_<TS>/`. Bypasses the FastAPI session manager (uses `docker run --entrypoint /opt/fgpu/bench_alloc` directly) — measurement target is hook overhead, not API overhead.
 - `scripts/eval/run_correlation.sh` — 5-A correlation extension. Spawns two PyTorch sessions running `test_compute.py` with different ratios, captures `nvidia-smi` memory + container PIDs (`docker top`) + timestamped logs (`docker logs --timestamps`). Calls `_correlate.py` to join everything into `correlation.csv` (long format: `t_seconds, container, launch_count, used_memory_mib`). Designed for two containers that *coexist* under quota — set `ALLOC_MIB=4096` to recreate 5-A's OOM scenario instead.
 - `scripts/eval/_correlate.py` — post-processing helper invoked by `run_correlation.sh`. stdlib only; parses ISO8601 docker timestamps + `nvidia-smi` CSV format, joins by PID set per container, emits `correlation.csv` and `correlation_summary.txt`.
+- `scripts/eval/run_throttle.sh` — Stage 12-D quantitative evaluation. Runs two containers sequentially with different `FGPU_COMPUTE_RATIO` (default A=0.3, B=0.6), parses launches/sec, computes throughput ratio vs expected ratio, emits PASS/FAIL. Artifacts under `experiments/throttle_<TS>/`.
 - `description.md` — long-form architecture / rationale doc, Korean. Read this for the *why*.
 - `LINUX_SETUP.md` — end-to-end first-run runbook for a fresh Ubuntu / RTX 4070 machine after `git clone`. Driver / CUDA / Docker / nvidia-container-toolkit setup, build, per-stage PASS criteria, troubleshooting table. Use when guiding the user through environment migration.
 
@@ -167,6 +170,15 @@ curl -X POST http://localhost:8000/sessions \
 # auth off (default — FGPU_API_TOKEN unset):
 ./scripts/run_backend.sh
 ./scripts/smoke_test_api.sh                        # works as before, no auth header
+
+# Stage 12 — duty-cycle compute throttle
+# (hook/src and runtime-image both changed — rebuild .so AND base image)
+./scripts/build_hook.sh           # libfgpu.so with throttle logic
+./scripts/build_image.sh          # /opt/fgpu/test_throttle baked in
+./scripts/run_throttle_in_container.sh              # baseline / off / on (ratio=0.4)
+FGPU_COMPUTE_RATIO=0.6 ./scripts/run_throttle_in_container.sh  # lighter throttle
+./scripts/eval/run_throttle.sh                      # → experiments/throttle_<TS>/summary.txt
+RATIO_A=0.2 RATIO_B=0.8 ./scripts/eval/run_throttle.sh  # different ratio pair
 ```
 
 `CUDA_HOME` (host build) defaults to `/usr/local/cuda`; `CUDA_VERSION` (image build) defaults to `12.4.1`. Keep host CUDA major version aligned with the image's CUDA major version — the host-built `libfgpu.so` is mounted into the container and dynamically links against the container's `libcudart`.
@@ -437,11 +449,32 @@ What this proves
 What it does NOT prove
 - Strict fairness or QoS. We accept or reject; we don't time-share or queue. Backend.AI's full scheduler does richer things (priority, preemption, fragmentation-aware bin-packing).
 
+### Stage 12 success criteria
+
+**`scripts/run_throttle_in_container.sh`**:
+- **Baseline**: `[fgpu]` 라인 없음. throughput 보고.
+- **Throttle OFF**: `[fgpu] init` 에 `throttle=off`. throughput ≈ baseline. `THROTTLE` 로그 없음.
+- **Throttle ON (ratio=0.4)**: `[fgpu] init` 에 `throttle=on compute_ratio=0.400 window_ms=100`. `[fgpu] THROTTLE sleep=NNms` 라인 존재. throughput ≈ baseline × 0.4. exit summary 에 throttle sleep count 포함.
+
+**`scripts/eval/run_throttle.sh`**:
+- `VERDICT: PASS` — 두 컨테이너의 throughput 비율이 compute_ratio 비율에 tolerance(±0.15) 내 수렴.
+
+What this proves
+- Duty-cycle throttle 이 `cudaLaunchKernel` 경로에서 동작하며, `FGPU_COMPUTE_RATIO` 에 비례하여 컴퓨트 throughput 을 제어할 수 있다.
+- Memory quota (Stage 1-6) + compute time-slice (Stage 12) 의 두 축 모두 hook 한 개로 구현 가능.
+- 기존 Stage 7 launch counter 와 독립적으로 동작 — throttle 를 끄면 counter-only 로 동작.
+
+What it does NOT prove
+- SM 격리. sleep 중에도 다른 컨테이너가 SM 을 안 쓰면 GPU 는 idle. Work-conserving 이 아님.
+- 커널 실행 시간 반영. 100ms heavy 커널 1 회 vs 1μs noop 1000 회를 구분 못함.
+- nanosleep 정밀도. Linux 최소 ~50μs 이므로 1ms 미만 윈도우에서는 부정확.
+- 실 워크로드(PyTorch 학습)에서의 공정성. noop 커널 throughput 비례성만 측정.
+
 ## Hard constraints — do not propose around these
 
 - **No MIG.** Target hardware is RTX 4060 (consumer card, MIG unsupported). MIG is mentioned only as a comparison baseline in the paper, never as a code path.
 - **VMM API hook = `cuMemCreate`/`cuMemRelease` only (Stage 6).** `cuMemAddressReserve`/`cuMemMap`/`cuMemUnmap`/`cuMemAddressFree` are intentionally not hooked (they don't change physical memory). `cuMemAllocAsync` and `cuMemAllocManaged` remain unhooked — Stage 6+ continuing work.
-- **No SM isolation.** Time-slicing via `cudaLaunchKernel` interception is a planned stage (3+ in the hook roadmap), but quota = memory only for now.
+- **No SM isolation.** Stage 12 adds duty-cycle compute time-slicing via `cudaLaunchKernel` interception with `nanosleep`, but this is cooperative wall-clock throttling, not hardware SM partitioning. True SM isolation requires MIG/MPS.
 - **Cooperative threat model.** Statically linked binaries can bypass the hook; this is documented as a limitation, not a bug to fix. (Note: with Stage 5-C the surface for `dlopen("libcuda.so")` users is closed too — those calls now hit the driver hook.)
 - **PyTorch caching allocator** masks per-call quota effects. When testing PyTorch integration (Stage 4), set `PYTORCH_NO_CUDA_MEMORY_CACHING=1`. Stage 5-C does not change this — the caching allocator's *one big slab* is still seen by both layers as a single allocation.
 

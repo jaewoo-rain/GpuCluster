@@ -38,14 +38,18 @@ COPY hook/tests/bench_alloc.cu       /tmp/bench_alloc.cu
 COPY hook/tests/test_driver_alloc.cu /tmp/test_driver_alloc.cu
 COPY hook/tests/test_launch.cu       /tmp/test_launch.cu
 COPY hook/tests/test_vmm_alloc.cu    /tmp/test_vmm_alloc.cu
+COPY hook/tests/test_throttle.cu     /tmp/test_throttle.cu
 # test_driver_alloc / test_vmm_alloc 는 Driver/VMM API (libcuda) 를 직접
 # 호출하므로 -lcuda 필요. nvcc 가 기본으로 -lcudart 만 link 하므로 명시 추가.
-RUN nvcc -O2 -o /opt/fgpu/test_alloc        /tmp/test_alloc.cu        \
- && nvcc -O2 -o /opt/fgpu/bench_alloc       /tmp/bench_alloc.cu       \
- && nvcc -O2 -o /opt/fgpu/test_driver_alloc /tmp/test_driver_alloc.cu -lcuda \
- && nvcc -O2 -o /opt/fgpu/test_launch       /tmp/test_launch.cu       \
- && nvcc -O2 -o /opt/fgpu/test_vmm_alloc    /tmp/test_vmm_alloc.cu    -lcuda \
- && rm /tmp/test_alloc.cu /tmp/bench_alloc.cu /tmp/test_driver_alloc.cu /tmp/test_launch.cu /tmp/test_vmm_alloc.cu
+# -cudart shared: CUDA 12.x 는 nvcc 기본이 static link 이라 LD_PRELOAD 가
+# cudaMalloc 심볼을 가로챌 수 없음. shared 링크해야 hook 이 동작.
+RUN nvcc -O2 -cudart shared -o /opt/fgpu/test_alloc        /tmp/test_alloc.cu        \
+ && nvcc -O2 -cudart shared -o /opt/fgpu/bench_alloc       /tmp/bench_alloc.cu       \
+ && nvcc -O2 -cudart shared -o /opt/fgpu/test_driver_alloc /tmp/test_driver_alloc.cu -lcuda \
+ && nvcc -O2 -cudart shared -o /opt/fgpu/test_launch       /tmp/test_launch.cu       \
+ && nvcc -O2 -cudart shared -o /opt/fgpu/test_vmm_alloc    /tmp/test_vmm_alloc.cu    -lcuda \
+ && nvcc -O2 -cudart shared -o /opt/fgpu/test_throttle     /tmp/test_throttle.cu     \
+ && rm /tmp/test_alloc.cu /tmp/bench_alloc.cu /tmp/test_driver_alloc.cu /tmp/test_launch.cu /tmp/test_vmm_alloc.cu /tmp/test_throttle.cu
 
 # Entrypoint: env / 마운트 sanity check 후 사용자 명령 exec.
 COPY runtime-image/entrypoint.sh /usr/local/bin/fgpu-entrypoint

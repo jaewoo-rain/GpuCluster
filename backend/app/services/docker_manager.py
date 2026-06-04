@@ -29,7 +29,7 @@ from docker.types import DeviceRequest
 # 백엔드 프로세스의 env 에 설정돼 있으면 컨테이너로도 그대로 전달되는 변수.
 # 5-A 확장 (run_correlation.sh) 에서 launch counter dump 주기를 컨테이너
 # 별로 통제하기 위함. 명시적 화이트리스트라 임의 env leak 방지.
-_PASSTHROUGH_ENV = ("FGPU_LAUNCH_LOG_EVERY",)
+_PASSTHROUGH_ENV = ("FGPU_LAUNCH_LOG_EVERY", "FGPU_WINDOW_MS")
 
 # Jupyter Lab 컨테이너 내부 포트. 호스트로는 ephemeral port 로 publish.
 _JUPYTER_CONTAINER_PORT = 8888
@@ -72,6 +72,7 @@ class DockerManager:
         quota_bytes: Optional[int] = None,
         image: Optional[str] = None,
         gpu_index: Optional[int] = None,
+        compute_ratio: Optional[float] = None,
         jupyter_mode: bool = False,
         workspace_host_dir: Optional[str] = None,
         ports: Optional[dict] = None,
@@ -82,6 +83,10 @@ class DockerManager:
         }
         if quota_bytes is not None:
             env["FGPU_QUOTA_BYTES"] = str(quota_bytes)
+        # Stage 12: compute_ratio 가 설정되면 duty-cycle throttle 활성화.
+        if compute_ratio is not None:
+            env["FGPU_THROTTLE_ENABLE"] = "1"
+            env["FGPU_COMPUTE_RATIO"] = str(compute_ratio)
 
         # 백엔드 프로세스 env 에 화이트리스트 변수가 있으면 컨테이너로 forward.
         # 운영자가 `FGPU_LAUNCH_LOG_EVERY=500 ./scripts/run_backend.sh` 로

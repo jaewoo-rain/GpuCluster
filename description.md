@@ -30,7 +30,7 @@ Lablup의 Backend.AI는 fGPU(fractional GPU) 기능을 통해 단일 GPU를 0.5,
 
 | 항목 | Backend.AI fGPU (상용) | 본 프로토타입 |
 |---|---|---|
-| 격리 | 메모리 + 연산 (시간 분할) | **메모리 quota** + **launch frequency 측정** (시행은 메모리만) |
+| 격리 | 메모리 + 연산 (시간 분할) | **메모리 quota** + **duty-cycle 컴퓨트 시분할** (Stage 12) + launch frequency 측정 |
 | 후킹 계층 | Runtime + Driver + 자체 allocator | Runtime + Driver (`cuMemAlloc_v2`) + VMM (`cuMemCreate`) + `cudaLaunchKernel` 카운터 |
 | 스케줄러 | Sokovan, 멀티 노드 | 단일 노드 단순 매니저 (SQLite persistence, 멀티-GPU device pinning) |
 | 사용자 시스템 | RBAC, 과금, 키페어 | bearer token 1개 (Stage 9 minimal) — RBAC/과금/키페어는 후속 |
@@ -447,6 +447,37 @@ PyTorch caching allocator 를 거치지 않는 *raw* cudaMalloc 측정이 핵심
 | 9.7 시계열 trace (memory + launch) | `scripts/eval/run_correlation.sh` (5-A 확장) | `experiments/correlation_<TS>/correlation.csv` |
 | 9.8 VMM API quota 시행 | `scripts/run_vmm_in_container.sh` | hook stderr `[fgpu] ALLOW/DENY cuMemCreate` |
 | 9.9 인증 / 멀티-GPU API 동작 | `curl` (수동) | `/healthz` 의 `auth_enabled`, 401 vs 201 응답 |
+| 9.10 Duty-cycle throttle 비례성 | `scripts/eval/run_throttle.sh` | `experiments/throttle_<TS>/summary.txt` |
+
+### 10.9 Stage 12 — Duty-cycle 기반 GPU 컴퓨트 시분할
+
+지금까지 프로토타입은 *메모리 quota* 만 강제하고, `cudaLaunchKernel` hook 은 호출 횟수를 세기만 했다. Stage 12 에서는 duty-cycle 방식으로 **컴퓨트 시간 제어** 를 추가한다.
+
+**메커니즘**: 시간 윈도우(기본 100ms) 를 반복하며, 윈도우 시작 후 `compute_ratio × window` 시간 동안만 launch 를 즉시 통과시키고, 나머지 시간은 `nanosleep()` 으로 대기시킨다. Launch 자체를 드롭하지 않고 *delay 만 삽입*하므로 커널은 항상 실행된다.
+
+**대안 비교**:
+
+| 기준 | Duty-cycle (시간 윈도우) | Token-bucket (launch당 delay) | cudaEvent (GPU 실측) |
+|---|---|---|---|
+| 구현 난이도 | 낮음 | 매우 낮음 | 높음 |
+| 정확도 | 중간 (wall-clock 기준) | 낮음 (launch 횟수 기준) | 높음 (GPU device-time) |
+| 캡스톤 적합성 | **최적** | 적합 | 과도 |
+
+**한계**:
+- SM 격리가 아님 — sleep 중에도 다른 컨테이너가 SM 을 안 쓰면 GPU idle. Work-conserving 이 아님.
+- 커널 실행 시간 미고려 — 100ms heavy 커널 1 회 vs 1μs noop 1000 회를 구분 못함.
+- nanosleep 정밀도 — Linux 최소 ~50μs. 매우 작은 윈도우에서는 부정확.
+- cooperative 모델 — hook 을 우회하는 프로세스에는 적용 불가.
+
+**Backend.AI 와의 비교**: Backend.AI 의 fGPU 도 컴퓨트 시분할을 제공하지만, 구체적 메커니즘은 비공개. 본 프로토타입은 wall-clock 기반 duty-cycle 이라는 명시적 모델을 사용하며, 그 한계와 정확도를 정량적으로 측정하는 것이 논문의 기여.
+
+**파일 변경 요약**:
+- `hook/src/fgpu_hook.c` — throttle 전역 상태 + env 파싱 + `cudaLaunchKernel` 훅 내 duty-cycle 로직
+- `hook/tests/test_throttle.cu` — noop kernel tight loop + wall-clock throughput 측정
+- `runtime-image/Dockerfile` — `test_throttle` 바이너리 추가
+- `scripts/run_throttle_in_container.sh` — baseline / off / on 3-way 검증
+- `scripts/eval/run_throttle.sh` — 두 ratio 의 throughput 비율 정량 검증
+- `backend/` — `compute_ratio` 필드 추가 (schema, store, manager, API, UI)
 
 ---
 

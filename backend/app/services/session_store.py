@@ -59,12 +59,14 @@ _MIGRATIONS = [
     ("jupyter_token", "ALTER TABLE sessions ADD COLUMN jupyter_token TEXT"),
     ("jupyter_url",   "ALTER TABLE sessions ADD COLUMN jupyter_url TEXT"),
     ("workspace_dir", "ALTER TABLE sessions ADD COLUMN workspace_dir TEXT"),
+    ("compute_ratio", "ALTER TABLE sessions ADD COLUMN compute_ratio REAL"),
 ]
 
 _SELECT_COLS = (
     "id, container_id, container_name, ratio, quota_bytes, "
     "image, command_json, created_at, status, exit_code, gpu_index, "
-    "mode, host_port, jupyter_token, jupyter_url, workspace_dir"
+    "mode, host_port, jupyter_token, jupyter_url, workspace_dir, "
+    "compute_ratio"
 )
 
 
@@ -103,6 +105,7 @@ class SessionStore:
             jupyter_token=row[13],
             jupyter_url=row[14],
             workspace_dir=row[15],
+            compute_ratio=row[16],
         )
 
     # ---- CRUD --------------------------------------------------------- #
@@ -111,7 +114,7 @@ class SessionStore:
             c.execute(
                 "INSERT INTO sessions ("
                 + _SELECT_COLS
-                + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                + ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     s.id,
                     s.container_id,
@@ -129,6 +132,7 @@ class SessionStore:
                     s.jupyter_token,
                     s.jupyter_url,
                     s.workspace_dir,
+                    s.compute_ratio,
                 ),
             )
 

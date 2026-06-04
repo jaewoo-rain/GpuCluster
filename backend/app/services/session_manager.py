@@ -87,6 +87,7 @@ class SessionManager:
         quota_bytes: Optional[int] = None,
         image: Optional[str] = None,
         gpu_index: Optional[int] = None,
+        compute_ratio: Optional[float] = None,
         force: bool = False,
     ) -> Session:
         # Stage 11: admission check 와 컨테이너 spawn 을 원자적으로.
@@ -94,7 +95,8 @@ class SessionManager:
             return await self._create_locked(
                 ratio=ratio, mode=mode, command=command,
                 quota_bytes=quota_bytes, image=image,
-                gpu_index=gpu_index, force=force,
+                gpu_index=gpu_index, compute_ratio=compute_ratio,
+                force=force,
             )
 
     async def _create_locked(
@@ -105,6 +107,7 @@ class SessionManager:
         quota_bytes: Optional[int],
         image: Optional[str],
         gpu_index: Optional[int],
+        compute_ratio: Optional[float],
         force: bool,
     ) -> Session:
         # 1) admission check (force=False 일 때만)
@@ -147,6 +150,7 @@ class SessionManager:
             quota_bytes=quota_bytes,
             image=img,
             gpu_index=gpu_index,
+            compute_ratio=compute_ratio,
             jupyter_mode=jupyter_mode,
             workspace_host_dir=workspace_dir,
             ports=ports,
@@ -183,6 +187,7 @@ class SessionManager:
             created_at=datetime.now(timezone.utc),
             status=c.status or "created",
             gpu_index=gpu_index,
+            compute_ratio=compute_ratio,
             host_port=host_port,
             jupyter_token=jupyter_token,
             jupyter_url=jupyter_url,

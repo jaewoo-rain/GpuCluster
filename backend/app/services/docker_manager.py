@@ -31,6 +31,17 @@ from docker.types import DeviceRequest
 # 별로 통제하기 위함. 명시적 화이트리스트라 임의 env leak 방지.
 _PASSTHROUGH_ENV = ("FGPU_LAUNCH_LOG_EVERY", "FGPU_WINDOW_MS")
 
+# 사용자 제공 env (SessionCreate.env) 가 절대 덮어쓸 수 없는 예약 키.
+# hook 동작 자체를 비활성/우회시키는 것을 막기 위함 — 사용자가 LD_PRELOAD 를
+# 비우거나 FGPU_RATIO 를 1.0 으로 바꿔 quota 를 무력화하는 것을 차단.
+_RESERVED_ENV = (
+    "LD_PRELOAD",
+    "FGPU_RATIO",
+    "FGPU_QUOTA_BYTES",
+    "FGPU_THROTTLE_ENABLE",
+    "FGPU_COMPUTE_RATIO",
+)
+
 # Jupyter Lab 컨테이너 내부 포트. 호스트로는 ephemeral port 로 publish.
 _JUPYTER_CONTAINER_PORT = 8888
 
@@ -76,6 +87,7 @@ class DockerManager:
         jupyter_mode: bool = False,
         workspace_host_dir: Optional[str] = None,
         ports: Optional[dict] = None,
+        env_extra: Optional[dict] = None,
     ):
         env = {
             "FGPU_RATIO": str(ratio),
@@ -95,6 +107,13 @@ class DockerManager:
             v = os.environ.get(key)
             if v is not None and key not in env:
                 env[key] = v
+
+        # 사용자 제공 env (워크로드 파라미터). 예약 키는 무시해 hook 보호.
+        if env_extra:
+            for k, v in env_extra.items():
+                if k in _RESERVED_ENV:
+                    continue
+                env[str(k)] = str(v)
 
         # docker run --gpus all 또는 --gpus device=N 패턴.
         # gpu_index=None → count=-1 (전 GPU 노출, 기본 동작).

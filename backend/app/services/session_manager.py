@@ -89,6 +89,7 @@ class SessionManager:
         gpu_index: Optional[int] = None,
         compute_ratio: Optional[float] = None,
         force: bool = False,
+        env: Optional[dict] = None,
     ) -> Session:
         # Stage 11: admission check 와 컨테이너 spawn 을 원자적으로.
         async with self._create_lock:
@@ -96,7 +97,7 @@ class SessionManager:
                 ratio=ratio, mode=mode, command=command,
                 quota_bytes=quota_bytes, image=image,
                 gpu_index=gpu_index, compute_ratio=compute_ratio,
-                force=force,
+                force=force, env=env,
             )
 
     async def _create_locked(
@@ -109,6 +110,7 @@ class SessionManager:
         gpu_index: Optional[int],
         compute_ratio: Optional[float],
         force: bool,
+        env: Optional[dict] = None,
     ) -> Session:
         # 1) admission check (force=False 일 때만)
         if not force:
@@ -154,6 +156,7 @@ class SessionManager:
             jupyter_mode=jupyter_mode,
             workspace_host_dir=workspace_dir,
             ports=ports,
+            env_extra=env,
         )
 
         # jupyter 모드면 docker 가 자동 할당한 host port 를 읽어옴.

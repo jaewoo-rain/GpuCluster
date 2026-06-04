@@ -60,6 +60,13 @@ def try_alloc(size_mib: int):
         print(f"[pytorch-test]        {e}", flush=True)
         return None
     except RuntimeError as e:
+        # PYTORCH_NO_CUDA_MEMORY_CACHING=1 일 때 hook 의 DENY 는 caching
+        # allocator 를 거치지 않고 raw "CUDA error: out of memory" RuntimeError
+        # 로 올라온다 (torch 2.5+). OutOfMemoryError 가 아니어도 OOM 으로 취급.
+        if "out of memory" in str(e).lower():
+            print(f"[pytorch-test]   OOM  ← cudaErrorMemoryAllocation 이 PyTorch 까지 전파됨", flush=True)
+            print(f"[pytorch-test]        {e}", flush=True)
+            return None
         # 예상치 못한 다른 에러도 죽지 않고 기록.
         print(f"[pytorch-test]   ERR  {type(e).__name__}: {e}", flush=True)
         return None

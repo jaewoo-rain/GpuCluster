@@ -50,10 +50,22 @@ def main() -> None:
         torch.cuda.synchronize()
         print(f"[hold-test] OK   ptr={hex(t.data_ptr())}", flush=True)
     except torch.cuda.OutOfMemoryError as e:
+        # 캐싱 allocator 가 켜진 경우 (또는 torch 버전에 따라) 잡히는 경로.
         print(f"[hold-test] OOM  ← cudaErrorMemoryAllocation 이 PyTorch 까지 전파됨",
               flush=True)
         print(f"[hold-test]      {e}", flush=True)
         sys.exit(1)
+    except RuntimeError as e:
+        # PYTORCH_NO_CUDA_MEMORY_CACHING=1 일 때 hook 의 DENY 는 caching
+        # allocator 를 거치지 않고 raw "CUDA error: out of memory" RuntimeError
+        # 로 올라온다 (torch 2.5+). 이것도 OOM 으로 취급해야 quota DENY 가
+        # 정상 동작했음을 마커로 남길 수 있다.
+        if "out of memory" in str(e).lower():
+            print(f"[hold-test] OOM  ← cudaErrorMemoryAllocation 이 PyTorch 까지 전파됨",
+                  flush=True)
+            print(f"[hold-test]      {e}", flush=True)
+            sys.exit(1)
+        raise
 
     print(f"[hold-test] holding {hold_sec}s ...", flush=True)
     time.sleep(hold_sec)

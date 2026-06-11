@@ -171,6 +171,139 @@ LD_PRELOAD=./myhook.so ls /
 
 ---
 
+## 부록 A — C 처음이라면 (이 챕터 코드 줄 단위 해설)
+
+위 1.3 / 1.5 의 코드가 "외계어"처럼 보였다면 정상입니다. C 를 처음 보면 한 줄에 모르는 게 5개씩 들어 있어요. 여기서 그 다섯 개를 하나씩 풀어봅니다. **이 부록만 이해하면 [Chapter 03](03-hook-walkthrough.md) 의 실제 hook 코드도 읽힙니다.**
+
+먼저 1.5 의 핵심 두 줄을 다시 가져옵니다.
+
+```c
+static void *(*real_malloc)(size_t) = NULL;          // (A) 선언
+
+void *malloc(size_t n) {                             // (B) 우리 가짜 malloc
+    if (!real_malloc) real_malloc = dlsym(RTLD_NEXT, "malloc");  // (C)
+    void *p = real_malloc(n);                        // (D) 진짜 호출
+    fprintf(stderr, "[hook] malloc(%zu) -> %p\n", n, p);         // (E)
+    return p;
+}
+```
+
+### A-1. `static` — "이 파일 밖에서는 안 보이게"
+
+```c
+static void *(*real_malloc)(size_t) = NULL;
+```
+
+`static` 은 여기서 "이 변수는 **이 .c 파일 안에서만** 쓰는 내 것" 이라는 뜻입니다. 다른 파일이 실수로 `real_malloc` 이라는 같은 이름을 써도 안 부딪쳐요. 라이브러리를 만들 때 내부용 변수에 거의 항상 붙입니다.
+
+> 비유: 집 안에서만 쓰는 별명. 옆집에도 같은 별명을 가진 사람이 있어도 헷갈리지 않음.
+
+(참고: 함수 안에서 `static` 을 붙이면 "호출이 끝나도 값이 안 사라진다" 는 또 다른 의미가 되는데, 지금 줄은 함수 *밖* 이라 위 뜻으로만 보면 됩니다.)
+
+### A-2. `void *(*real_malloc)(size_t)` — 함수 포인터, 한 글자씩
+
+이게 이 챕터에서 제일 안 읽히는 줄입니다. **안에서 바깥으로** 읽으면 풀립니다.
+
+```
+void *  (*real_malloc)  (size_t)
+  ▲          ▲             ▲
+  │          │             └─ 이 함수는 size_t 한 개를 인자로 받음
+  │          └─ real_malloc 는 "함수의 주소를 담는 변수" (괄호 () 가 핵심)
+  └─ 그 함수가 돌려주는 값의 타입은 void* (= "아무 타입이나 가리키는 주소")
+```
+
+합쳐서: **"`real_malloc` 은 `size_t` 하나를 받고 `void*` 를 돌려주는 *함수의 주소* 를 담는 변수"**.
+
+왜 함수의 "주소" 를 변수에 담을까요? 우리는 컴파일 시점에 진짜 `malloc` 이 메모리 어디에 있는지 모릅니다. 실행 중에 `dlsym` 으로 그 주소를 알아낸 뒤 이 변수에 **나중에** 채워 넣으려는 거예요. (함수 포인터 기본기는 [Chapter 00 §0.1](00-prerequisites.md) 에 있음.)
+
+> `(*real_malloc)` 의 괄호를 빼면 의미가 완전히 달라집니다. `void *real_malloc(size_t)` 는 "변수" 가 아니라 "이런 함수를 선언한다" 가 돼버려요. 괄호 한 쌍이 변수냐 함수냐를 가릅니다.
+
+### A-3. `void *`, `size_t`, `cudaError_t` — 이 타입들 정체
+
+| 표기 | 뜻 | 풀어서 |
+|---|---|---|
+| `void *p` | "아무 타입이나 가리키는 주소" | malloc 은 int 든 뭐든 줄 수 있어 타입을 안 정함. 그래서 `void*` |
+| `void **p` | "void* 를 가리키는 주소" (별 두 개) | `cudaMalloc(&p, N)` 처럼 *포인터를 통째로 바꿔주는* 함수에 필요 → A-5 |
+| `size_t n` | "크기/개수 전용 정수" | `int` 같은 정수인데 음수가 없고 메모리 크기에 맞춰 충분히 큼 |
+| `cudaError_t` | CUDA 의 에러 코드 enum | 사실은 그냥 정수에 이름 붙인 것 (`0=성공`, `2=메모리부족`) |
+
+`cudaError_t` 같은 이름은 헤더 파일 안에서 `typedef` 로 만들어진 **별명** 입니다. 즉 어딘가에 `typedef enum { cudaSuccess=0, ... } cudaError_t;` 가 있고, 우리는 그 별명만 빌려 쓰는 거예요. 그래서 1.4 표에서 "`cudaError_t` enum 정의가 헤더에서 온다" 고 한 겁니다.
+
+### A-4. `NULL` 과 `if (!real_malloc)` — "아직 비었나?" 검사
+
+```c
+static ... real_malloc ... = NULL;     // 처음엔 "빈 주소"
+if (!real_malloc) real_malloc = dlsym(...);  // 비었으면 한 번만 채운다
+```
+
+- `NULL` = "아무 데도 안 가리키는 주소" = 숫자로는 0. "아직 안 채웠음" 표시로 씁니다.
+- C 에서는 **0(=NULL)이면 거짓, 0이 아니면 참**입니다. `if (real_malloc)` 은 "real_malloc 에 값이 들어 있으면" 이고, `!` 는 "아니다(NOT)" 라서 `if (!real_malloc)` 은 **"real_malloc 이 아직 비어 있으면"** 이 됩니다.
+- 그래서 이 한 줄은 *"처음 호출될 때 딱 한 번만 진짜 주소를 찾아 채운다"* 는 뜻 — 이게 1.3 에서 말한 **lazy initialization** 입니다. 두 번째 호출부터는 이미 차 있으니 `dlsym` 을 건너뜁니다.
+
+### A-5. `&p` 와 별 두 개(`void**`) — `cudaMalloc(&p, N)` 이 이상한 이유
+
+[Chapter 00 §0.3](00-prerequisites.md) 에서 `cudaMalloc(&p, 1024)` 를 봤죠. 왜 `&` 를 붙일까요?
+
+```c
+void *p = NULL;
+cudaMalloc(&p, 1024);   // p "자체" 를 바꿔달라고, p 의 주소(&p)를 넘김
+```
+
+C 는 함수에 값을 넘기면 **복사본** 이 갑니다. 만약 `cudaMalloc(p, 1024)` 라고 하면 `p` 의 *복사본* 만 함수 안에서 바뀌고 바깥 `p` 는 그대로 NULL 이에요. 그래서 "내 변수 `p` 를 직접 고쳐줘" 라고 **변수의 주소(`&p`)** 를 넘깁니다. `p` 가 이미 `void*` 니까, 그 주소는 `void**`(별 두 개)가 되는 거고요. 이래서 1.3 의 시그니처가 `cudaMalloc(void **p, size_t n)` 입니다.
+
+> 한 줄 요약: **"값을 돌려받을 게 아니라, 내 변수를 직접 바꿔달라" 할 때 `&`(주소)를 넘기고, 받는 쪽 타입엔 별이 하나 더 붙는다.**
+
+### A-6. `#define` 과 `#include` — `#` 으로 시작하는 줄들
+
+```c
+#define _GNU_SOURCE      // (1)
+#include <dlfcn.h>       // (2)
+```
+
+`#` 으로 시작하는 줄은 C 컴파일 *전에* 처리되는 **전처리기(preprocessor)** 명령입니다. 컴파일러가 보기 전에 텍스트를 먼저 손봐요.
+
+- `#include <dlfcn.h>` = "이 자리에 `dlfcn.h` 파일 내용을 통째로 복사해 붙여라". `dlsym`, `RTLD_NEXT` 같은 게 그 파일 안에 선언돼 있어서 가져오는 겁니다. `<stdio.h>` 는 `fprintf` 를, `<stdlib.h>` 는 일반 `malloc` 정의를 가져오고요.
+- `#define _GNU_SOURCE` = "`_GNU_SOURCE` 라는 스위치를 켠 상태로 쳐라". 헤더 파일 안에 `#ifdef _GNU_SOURCE` (이 스위치가 켜져 있으면) ... `RTLD_NEXT` 를 보여줌 ... 같은 조건문이 있어서, 이 스위치를 **`#include` 보다 먼저** 켜야 `RTLD_NEXT` 가 나타납니다. 순서가 바뀌면 "`RTLD_NEXT` 그런 거 없는데?" 컴파일 에러가 나는 이유예요 (1.3 디테일 1번).
+
+### A-7. `fprintf(stderr, "...%zu...%p...", n, p)` — 출력 한 줄
+
+```c
+fprintf(stderr, "[hook] malloc(%zu) -> %p\n", n, p);
+```
+
+- `fprintf` = "지정한 곳에 형식 맞춰 출력". 첫 인자 `stderr` 는 **출력 대상** 입니다.
+- `stderr` = 표준 에러 출력. 우리는 로그를 일부러 여기로 보냅니다. 사용자 프로그램의 진짜 결과(`stdout`)와 안 섞이게 하려고요 (CLAUDE.md 의 "모든 `[fgpu]` 로그는 stderr 로" 규칙).
+- `%zu`, `%p` 는 **빈칸** 입니다. 뒤의 인자로 채워져요: `%zu` ← `n`(size_t 정수), `%p` ← `p`(포인터 주소). `%s`=문자열, `%d`=int. 타입이 안 맞으면 깨진 값이 찍힙니다.
+- `\n` = 줄바꿈 한 칸.
+
+### A-8. gcc 명령의 `-` 플래그들 (1.4 보충)
+
+```bash
+gcc -shared -fPIC -o myhook.so myhook.c -ldl
+```
+
+- `-o myhook.so` = output, 결과 파일 이름을 `myhook.so` 로.
+- `myhook.c` = 입력 소스.
+- `-ldl` = "`libdl` 라이브러리를 링크해라". `-l` 뒤에 이름을 붙이면 `lib`+이름+`.so` 를 찾습니다. `-ldl`→`libdl`(dlsym 들어 있음), `-lcudart`→`libcudart`. 이게 1.4 표의 마지막 두 줄이에요.
+
+### A-9. 한 번 직접 해보기 (강력 추천)
+
+읽기만 하면 안 남습니다. 1.5 의 `myhook.c` 를 **지금** 만들어 돌려보세요. CUDA 도 GPU 도 필요 없고 노트북에서 바로 됩니다.
+
+```bash
+# 1) 위 1.5 의 myhook.c 를 그대로 저장
+# 2) 빌드
+gcc -shared -fPIC -o myhook.so myhook.c -ldl
+# 3) 아무 명령에나 끼워서 실행
+LD_PRELOAD=./myhook.so ls /
+```
+
+`[hook] malloc(...) -> 0x...` 가 와르르 쏟아지면 성공입니다. `ls` 소스를 한 줄도 안 고쳤는데 `ls` 내부의 모든 `malloc` 호출을 우리가 가로챈 거예요. **이 순간이 이 프로젝트 전체의 "아하" 포인트** 입니다 — `cudaMalloc` 도 똑같은 원리로 잡습니다.
+
+> 막히면: `gcc: command not found` → `sudo apt install build-essential`. 출력이 안 보이면 `LD_PRELOAD=./myhook.so ls / 2>&1 | head` 로 stderr 를 같이 보세요(`2>&1`).
+
+---
+
 ## 자가점검 질문
 
 1. `LD_PRELOAD` 가 *무엇을* 정확히 바꾸는가? (한 문장)

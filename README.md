@@ -80,6 +80,15 @@ PyTorch 가 cudaMalloc(2GB) 호출
 ```bash
 chmod +x scripts/*.sh scripts/eval/*.sh runtime-image/entrypoint.sh
 
+
+chmod +x scripts/*.sh runtime-image/entrypoint.sh runtime-image-pytorch/*.sh 2>/dev/null
+./scripts/build_hook.sh            # libfgpu.so
+./scripts/build_image.sh           # fgpu-runtime:stage2 (베이스)
+./scripts/build_pytorch_image.sh   # fgpu-runtime-pytorch:stage4 (주피터)
+./scripts/run_backend.sh           # :8000
+# http://localhost:8000/ → mode=jupyter
+
+
 # 1) 한 번만 빌드 (PyTorch 이미지 첫 빌드는 5~10분)
 ./scripts/build_hook.sh                 # → build/libfgpu.so
 ./scripts/build_image.sh                # → fgpu-runtime:stage2
@@ -144,6 +153,18 @@ UI 의 Logs 패널에서 다음과 같은 hook 로그를 직접 확인:
 [fgpu] quota lazily 계산: ratio=0.400 * total=12426543104 = 4970617241 bytes
 [fgpu] DENY  cudaMalloc size=5368709120 used=0 quota=4970617241    ← 차단
 ```
+
+### 실제 LLM 공유 실험 (fractional 공유 이득 측정)
+
+위 데모를 한 단계 확장해, **실제 소형 LLM(Qwen2-0.5B) 추론**을 두 Jupyter 세션
+(예: ratio `0.4` / `0.6`)에서 돌려 **단독 vs 순차(A→B) vs 동시(A+B 공유)** 의
+makespan·tokens/sec·GPU util 을 노트북 안 파이썬으로 측정하고 공유 이득(speedup)을 비교한다.
+
+이미지 리빌드·백엔드 수정 없이(노트북 첫 셀에서 런타임 `pip install`) 바로 실행 가능.
+
+→ 실행 가이드: **[notebooks/README.md](notebooks/README.md)** (세션 생성 → 노트북 업로드 →
+시나리오별 실행 → 종합 분석). 노트북: [`notebooks/fgpu_infer.ipynb`](notebooks/fgpu_infer.ipynb),
+[`notebooks/fgpu_analysis.ipynb`](notebooks/fgpu_analysis.ipynb).
 
 ---
 

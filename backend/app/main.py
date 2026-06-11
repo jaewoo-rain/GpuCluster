@@ -72,6 +72,27 @@ def create_app() -> FastAPI:
     else:
         logger.info("FGPU_API_TOKEN not set → /sessions routes are unauthenticated")
 
+    @app.on_event("startup")
+    async def _startup_reconcile_orphans() -> None:
+        """앱 부팅 시 orphan 컨테이너 1회 스윕.
+
+        과거 버전이 남긴 고아 컨테이너(DB record 없이 실행 중인 fgpu- 컨테이너)를
+        회수해 GPU/메모리 누수를 초기화한다.
+        실패해도 앱 부팅을 막지 않는다.
+        """
+        try:
+            removed = await session_mgr.reconcile_orphans()
+            if removed:
+                logger.info(
+                    "startup reconcile_orphans: %d orphan container(s) removed.", removed
+                )
+            else:
+                logger.debug("startup reconcile_orphans: no orphans found.")
+        except BaseException as e:
+            logger.warning(
+                "startup reconcile_orphans failed (ignored): %s", e, exc_info=True
+            )
+
     @app.get("/healthz")
     def healthz() -> dict:
         return {

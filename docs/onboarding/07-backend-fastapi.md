@@ -55,10 +55,10 @@ app.state.session_manager = session_mgr    # ApplicationContext 에 등록
 app.state.api_token = settings.api_token   # 설정값도 여기에 보관
 ```
 
-- 빈 조립: [main.py:49](backend/app/main.py#L49) ~ [main.py:68](backend/app/main.py#L68)
+- 빈 조립: [main.py:49](../../backend/app/main.py#L49) ~ [main.py:68](../../backend/app/main.py#L68)
 - 여기서 `SessionManager` 가 `DockerManager` 와 `SessionStore` 를 **생성자 주입**받는 게 보이시죠? Spring 의 생성자 주입과 100% 같은 그림입니다.
-- 라우터 등록(= 컨트롤러 스캔에 해당): [main.py:91](backend/app/main.py#L91)
-- 맨 마지막 줄 `app = create_app()` ([main.py:95](backend/app/main.py#L95)) 이 uvicorn(=톰캣 역할)이 잡아서 실행하는 진입점입니다.
+- 라우터 등록(= 컨트롤러 스캔에 해당): [main.py:112](../../backend/app/main.py#L112)
+- 맨 마지막 줄 `app = create_app()` ([main.py:116](../../backend/app/main.py#L116)) 이 uvicorn(=톰캣 역할)이 잡아서 실행하는 진입점입니다.
 
 ### 흔한 함정
 - **컨트롤러(api) 안에서 `DockerManager()` 를 직접 `new` 하지 마세요.** 그러면 docker 소켓 커넥션이 요청마다 새로 생기고, 테스트에서 목(mock)으로 갈아끼울 수도 없습니다. 반드시 `create_app()` 에서 한 번 만들어 `app.state` 를 통해 주입받으세요. (Spring 에서 서비스 안에서 `new Repository()` 하면 안 되는 것과 똑같은 이유입니다.)
@@ -118,10 +118,10 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="FGPU_", ...)
 ```
 
-- `Settings` 클래스: [config.py:40](backend/app/core/config.py#L40)
-- `env_prefix="FGPU_"` ([config.py:49](backend/app/core/config.py#L49)) 덕분에 필드 `runtime_image` 는 환경변수 `FGPU_RUNTIME_IMAGE` 로 override 됩니다. (Spring 의 prefix 와 동일한 개념.)
-- `@lru_cache` 가 붙은 `get_settings()`: [config.py:52](backend/app/core/config.py#L52) — 한 번 만든 설정 객체를 캐시해서 매번 다시 안 읽습니다. 이건 **싱글턴 빈**과 같은 효과예요.
-- 경로 자동 탐지: `host_hook_path` 나 `db_path` 가 비어 있으면 repo 루트를 추정해 채워 넣습니다 ([config.py:55](backend/app/core/config.py#L55)~[config.py:60](backend/app/core/config.py#L60)).
+- `Settings` 클래스: [config.py:40](../../backend/app/core/config.py#L40)
+- `env_prefix="FGPU_"` ([config.py:49](../../backend/app/core/config.py#L49)) 덕분에 필드 `runtime_image` 는 환경변수 `FGPU_RUNTIME_IMAGE` 로 override 됩니다. (Spring 의 prefix 와 동일한 개념.)
+- `@lru_cache` 가 붙은 `get_settings()`: [config.py:52](../../backend/app/core/config.py#L52) — 한 번 만든 설정 객체를 캐시해서 매번 다시 안 읽습니다. 이건 **싱글턴 빈**과 같은 효과예요.
+- 경로 자동 탐지: `host_hook_path` 나 `db_path` 가 비어 있으면 repo 루트를 추정해 채워 넣습니다 ([config.py:55](../../backend/app/core/config.py#L55)~[config.py:60](../../backend/app/core/config.py#L60)).
 
 ### 흔한 함정
 - `@lru_cache` 때문에 **테스트에서 환경변수를 바꿔도 설정이 안 바뀌는** 함정이 있습니다. 이미 캐시된 값을 돌려주거든요. 테스트에서 다른 설정이 필요하면 `get_settings.cache_clear()` 를 호출하세요.
@@ -147,10 +147,10 @@ class SessionCreate(BaseModel):        # POST 요청 body DTO
     force: bool = Field(default=False)
 ```
 
-- 요청 DTO `SessionCreate`: [session.py:25](backend/app/schemas/session.py#L25) — `ratio` 검증 규칙은 [session.py:27](backend/app/schemas/session.py#L27).
-- 응답/레코드 겸용 `Session`: [session.py:63](backend/app/schemas/session.py#L63).
+- 요청 DTO `SessionCreate`: [session.py:25](../../backend/app/schemas/session.py#L25) — `ratio` 검증 규칙은 [session.py:27](../../backend/app/schemas/session.py#L27).
+- 응답/레코드 겸용 `Session`: [session.py:69](../../backend/app/schemas/session.py#L69).
 
-> 참고: 이 프로젝트는 요청 DTO(`SessionCreate`)와 응답 DTO(`Session`)를 분리했지만, `Session` 하나가 "내부 레코드 + API 응답"을 겸합니다 ([session.py:4](backend/app/schemas/session.py#L4) 설계 메모 참고). Spring 이라면 Entity 와 응답 DTO 를 나누라고 배웠겠지만, 이 프로토타입 규모에선 변환 로직이 아까워서 통합했습니다.
+> 참고: 이 프로젝트는 요청 DTO(`SessionCreate`)와 응답 DTO(`Session`)를 분리했지만, `Session` 하나가 "내부 레코드 + API 응답"을 겸합니다 ([session.py:4](../../backend/app/schemas/session.py#L4) 설계 메모 참고). Spring 이라면 Entity 와 응답 DTO 를 나누라고 배웠겠지만, 이 프로토타입 규모에선 변환 로직이 아까워서 통합했습니다.
 
 컨트롤러에서 DTO 를 받는 모습은 이렇게 타입 힌트 한 줄이면 끝입니다 (`@RequestBody @Valid` 가 필요 없어요):
 
@@ -158,7 +158,7 @@ class SessionCreate(BaseModel):        # POST 요청 body DTO
 @router.post("", response_model=Session, status_code=201)
 async def create_session(body: SessionCreate, ...):   # 파싱+검증 자동
 ```
-- [sessions.py:62](backend/app/api/sessions.py#L62)~[sessions.py:66](backend/app/api/sessions.py#L66)
+- [sessions.py:62](../../backend/app/api/sessions.py#L62)~[sessions.py:66](../../backend/app/api/sessions.py#L66)
 
 ### 흔한 함정
 - Pydantic 검증에 걸리면 FastAPI 가 자동으로 **HTTP 422** 를 돌려줍니다. Spring 의 400 이 아니라 422 라는 점만 기억하세요.
@@ -181,7 +181,7 @@ router = APIRouter(
     dependencies=[Depends(_require_auth)],   # 이 라우터의 모든 엔드포인트에 적용
 )
 ```
-- 라우터 전체에 인증 의존성 부착: [sessions.py:51](backend/app/api/sessions.py#L51)~[sessions.py:55](backend/app/api/sessions.py#L55)
+- 라우터 전체에 인증 의존성 부착: [sessions.py:51](../../backend/app/api/sessions.py#L51)~[sessions.py:55](../../backend/app/api/sessions.py#L55)
 
 `dependencies=[...]` 에 넣은 의존성은 **해당 라우터의 모든 엔드포인트가 실행되기 전에 반드시 통과**해야 합니다. 인터셉터의 `preHandle` 과 같은 위치예요. `/sessions` 아래만 걸리고 `/healthz` 나 `/`(UI)는 별도로 등록돼서 인증 없이 열려 있습니다.
 
@@ -197,9 +197,9 @@ def _require_auth(request, authorization: str | None = Header(default=None)):
     if not hmac.compare_digest(given, expected):   # ← 여기가 핵심
         raise HTTPException(401, "invalid bearer token", ...)
 ```
-- 함수 전체: [sessions.py:28](backend/app/api/sessions.py#L28)~[sessions.py:48](backend/app/api/sessions.py#L48)
-- 빈 토큰이면 통과(개발 기본): [sessions.py:33](backend/app/api/sessions.py#L33)
-- 상수 시간 비교: [sessions.py:43](backend/app/api/sessions.py#L43)
+- 함수 전체: [sessions.py:28](../../backend/app/api/sessions.py#L28)~[sessions.py:48](../../backend/app/api/sessions.py#L48)
+- 빈 토큰이면 통과(개발 기본): [sessions.py:33](../../backend/app/api/sessions.py#L33)
+- 상수 시간 비교: [sessions.py:43](../../backend/app/api/sessions.py#L43)
 
 ### 왜 `hmac.compare_digest` 인가 (timing attack)
 그냥 `given == expected` 로 비교하면 안 될까요? 안 됩니다. 파이썬의 `==` 는 **첫 글자가 다르면 즉시 False 를 반환**합니다. 그래서 공격자가 응답 시간을 정밀하게 재면 "앞의 몇 글자가 맞았는지"를 알아낼 수 있어요. 한 글자씩 브루트포스로 토큰을 복원할 수 있는 겁니다. 이게 **타이밍 공격(timing attack)** 입니다.
@@ -207,7 +207,7 @@ def _require_auth(request, authorization: str | None = Header(default=None)):
 `hmac.compare_digest` 는 **일치하든 안 하든 항상 같은 시간**을 쓰도록 만들어져서, 응답 시간으로는 아무 정보도 새어나가지 않습니다. 비밀번호/토큰/서명 비교에는 반드시 이걸 쓰세요.
 
 ### 흔한 함정
-- 401 응답에 `WWW-Authenticate: Bearer` 헤더를 같이 보내야 표준을 지키는 겁니다 ([sessions.py:39](backend/app/api/sessions.py#L39)). 빠뜨리기 쉬워요.
+- 401 응답에 `WWW-Authenticate: Bearer` 헤더를 같이 보내야 표준을 지키는 겁니다 ([sessions.py:39](../../backend/app/api/sessions.py#L39)). 빠뜨리기 쉬워요.
 - `FGPU_API_TOKEN` 을 안 걸어두면 인증이 **꺼진 채로** 돌아갑니다. 개발엔 편하지만, 프로덕션에서 이 상태면 사고입니다.
 
 > 한 줄 요약: 인증은 라우터 레벨 `Depends` 한 줄, 토큰 비교는 반드시 `hmac.compare_digest` 로 타이밍 공격 방어.
@@ -259,18 +259,18 @@ c = await asyncio.to_thread(self.docker.create_container, name=name, ...)
 ### 실제 코드 (규칙: 모든 docker/sqlite 호출은 to_thread 로 감싼다)
 `SessionManager` 는 이 규칙을 철저히 지킵니다.
 
-- docker 컨테이너 생성: [session_manager.py:145](backend/app/services/session_manager.py#L145)
-- 상태 조회(docker): [session_manager.py:206](backend/app/services/session_manager.py#L206)
-- store insert(sqlite): [session_manager.py:196](backend/app/services/session_manager.py#L196)
-- store get(sqlite): [session_manager.py:201](backend/app/services/session_manager.py#L201)
-- 로그/정지/삭제도 전부 `to_thread`: [session_manager.py:239](backend/app/services/session_manager.py#L239), [session_manager.py:251](backend/app/services/session_manager.py#L251), [session_manager.py:261](backend/app/services/session_manager.py#L261)
+- docker 컨테이너 생성: [session_manager.py:211](../../backend/app/services/session_manager.py#L211)
+- 상태 조회(docker): [session_manager.py:294](../../backend/app/services/session_manager.py#L294)
+- store insert(sqlite): [session_manager.py:271](../../backend/app/services/session_manager.py#L271)
+- store get(sqlite): [session_manager.py:289](../../backend/app/services/session_manager.py#L289)
+- 로그/정지/삭제도 전부 `to_thread`: [session_manager.py:327](../../backend/app/services/session_manager.py#L327), [session_manager.py:339](../../backend/app/services/session_manager.py#L339), [session_manager.py:349](../../backend/app/services/session_manager.py#L349)
 
 그리고 목록 조회는 한발 더 나갑니다. 각 세션의 상태를 docker 와 동기화할 때 **`asyncio.gather` 로 동시에** 처리해서 응답 지연을 줄입니다:
 
 ```python
 results = await asyncio.gather(*(self.get(r.id) for r in recs))
 ```
-- [session_manager.py:229](backend/app/services/session_manager.py#L229)~[session_manager.py:231](backend/app/services/session_manager.py#L231)
+- [session_manager.py:317](../../backend/app/services/session_manager.py#L317)~[session_manager.py:319](../../backend/app/services/session_manager.py#L319)
 
 `gather` 는 여러 비동기 작업을 동시에 시작해 모두 끝날 때까지 기다립니다. Java 의 `CompletableFuture.allOf(...)` 와 같은 개념이에요.
 
@@ -289,17 +289,17 @@ results = await asyncio.gather(*(self.get(r.id) for r in recs))
 
 | 메서드 & 경로 | 하는 일 | 성공 코드 | 코드 위치 |
 |---|---|---|---|
-| `POST /sessions` | 세션 생성(컨테이너 spawn). 어드미션 초과 시 409, force 로 우회 | 201 | [sessions.py:62](backend/app/api/sessions.py#L62) |
-| `GET /sessions` | 전체 세션 목록 (docker 와 상태 reconcile) | 200 | [sessions.py:103](backend/app/api/sessions.py#L103) |
-| `GET /sessions/admission` | GPU 별 ratio 사용 현황 (capacity 표시용) | 200 | [sessions.py:97](backend/app/api/sessions.py#L97) |
-| `GET /sessions/{id}` | 세션 상세 (status/exit_code 자동 갱신) | 200 / 404 | [sessions.py:108](backend/app/api/sessions.py#L108) |
-| `GET /sessions/{id}/logs` | 컨테이너 stdout+stderr 일부 (`?tail=`) | 200 / 404 | [sessions.py:116](backend/app/api/sessions.py#L116) |
-| `POST /sessions/{id}/stop` | 컨테이너 정지 (레코드는 보존) | 200 / 404 | [sessions.py:128](backend/app/api/sessions.py#L128) |
-| `DELETE /sessions/{id}` | 컨테이너 삭제 + 레코드 제거 (`?purge_workspace=`) | 200 / 404 | [sessions.py:136](backend/app/api/sessions.py#L136) |
-| `GET /healthz` | 헬스체크 + 인증 활성 여부 | 200 | [main.py:75](backend/app/main.py#L75) |
-| `GET /` | 단일 파일 웹 UI | 200 | [main.py:87](backend/app/main.py#L87) |
+| `POST /sessions` | 세션 생성(컨테이너 spawn). 어드미션 초과 시 409, force 로 우회 | 201 | [sessions.py:62](../../backend/app/api/sessions.py#L62) |
+| `GET /sessions` | 전체 세션 목록 (docker 와 상태 reconcile) | 200 | [sessions.py:104](../../backend/app/api/sessions.py#L104) |
+| `GET /sessions/admission` | GPU 별 ratio 사용 현황 (capacity 표시용) | 200 | [sessions.py:98](../../backend/app/api/sessions.py#L98) |
+| `GET /sessions/{id}` | 세션 상세 (status/exit_code 자동 갱신) | 200 / 404 | [sessions.py:109](../../backend/app/api/sessions.py#L109) |
+| `GET /sessions/{id}/logs` | 컨테이너 stdout+stderr 일부 (`?tail=`) | 200 / 404 | [sessions.py:117](../../backend/app/api/sessions.py#L117) |
+| `POST /sessions/{id}/stop` | 컨테이너 정지 (레코드는 보존) | 200 / 404 | [sessions.py:129](../../backend/app/api/sessions.py#L129) |
+| `DELETE /sessions/{id}` | 컨테이너 삭제 + 레코드 제거 (`?purge_workspace=`) | 200 / 404 | [sessions.py:137](../../backend/app/api/sessions.py#L137) |
+| `GET /healthz` | 헬스체크 + 인증 활성 여부 | 200 | [main.py:96](../../backend/app/main.py#L96) |
+| `GET /` | 단일 파일 웹 UI | 200 | [main.py:108](../../backend/app/main.py#L108) |
 
-예외를 HTTP 상태로 번역하는 것도 컨트롤러의 몫입니다. 어드미션 초과(`AdmissionDenied`)는 409, 그 밖의 docker 오류는 500 으로 감싸는 부분을 보세요: [sessions.py:78](backend/app/api/sessions.py#L78)~[sessions.py:94](backend/app/api/sessions.py#L94). (Spring 의 `@ExceptionHandler` 를 인라인으로 쓴 셈입니다.)
+예외를 HTTP 상태로 번역하는 것도 컨트롤러의 몫입니다. 어드미션 초과(`AdmissionDenied`)는 409, 그 밖의 docker 오류는 500 으로 감싸는 부분을 보세요: [sessions.py:79](../../backend/app/api/sessions.py#L79)~[sessions.py:95](../../backend/app/api/sessions.py#L95). (Spring 의 `@ExceptionHandler` 를 인라인으로 쓴 셈입니다.)
 
 > 한 줄 요약: 컨트롤러는 "HTTP 껍데기 + 예외→상태코드 변환"만 하고, 실제 일은 전부 `SessionManager` 에 위임합니다.
 

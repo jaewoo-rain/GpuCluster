@@ -116,7 +116,7 @@ curl -sS http://localhost:8000/healthz
 
 `{"ok":true}` 를 봤다면 "패키징 + 서버 부팅"이라는 가장 지루하지만 가장 중요한 토대가 검증된 겁니다. 이제 살을 붙입니다.
 
-완성된 `/healthz` 는 설정값들을 그대로 노출해서 디버깅에 쓰입니다([main.py:75-85](../../backend/app/main.py#L75-L85)) — hook `.so` 존재 여부, DB 경로, 인증 활성 여부까지. 하지만 그건 나중 이야기고, 지금은 `{"ok":true}` 로 충분합니다.
+완성된 `/healthz` 는 설정값들을 그대로 노출해서 디버깅에 쓰입니다([main.py:96-106](../../backend/app/main.py#L96-L106)) — hook `.so` 존재 여부, DB 경로, 인증 활성 여부까지. 하지만 그건 나중 이야기고, 지금은 `{"ok":true}` 로 충분합니다.
 
 ---
 
@@ -154,7 +154,7 @@ class Session(BaseModel):
 - `SessionCreate` 와 `Session` 을 나눕니다. 전자는 "사용자가 주는 것", 후자는 "우리가 관리하는 record + 응답". `ratio` 의 `gt=0.0, le=1.0` 제약을 여기 박아두면 잘못된 값은 라우터에 닿기도 전에 pydantic 이 422 로 걷어냅니다.
 - `Session` 하나를 **내부 record 겸 API 응답**으로 씁니다. Stage 3 MVP 에선 변환 로직이 필요 없을 만큼 단순하기 때문입니다. 완성본 상단 주석도 이 결정을 명시합니다([session.py:4-6](../../backend/app/schemas/session.py#L4-L6)).
 
-이후 스테이지에서 이 모델은 계속 자랍니다. `gpu_index`(Stage 9), `mode`/`host_port`/`jupyter_token`(Stage 10), `compute_ratio`/`force`(Stage 11·12) 가 **추가만** 됩니다(기존 필드는 안 건드림). 이 "추가만" 규칙 덕에 하위 호환이 유지됩니다. 완성본: [session.py:25-82](../../backend/app/schemas/session.py#L25-L82).
+이후 스테이지에서 이 모델은 계속 자랍니다. `gpu_index`(Stage 9), `mode`/`host_port`/`jupyter_token`(Stage 10), `compute_ratio`/`force`(Stage 11·12) 가 **추가만** 됩니다(기존 필드는 안 건드림). 이 "추가만" 규칙 덕에 하위 호환이 유지됩니다. 완성본: [session.py:25-88](../../backend/app/schemas/session.py#L25-L88).
 
 > **함정.** 응답 모델을 나중으로 미루고 dict 를 대충 반환하기 시작하면, 필드가 늘 때마다 반환 지점 전부를 손봐야 합니다. `response_model=Session` 을 라우터에 붙이면(7 스텝) FastAPI 가 자동 검증·직렬화·문서화까지 해주니, 모델을 먼저 정하는 투자가 금방 회수됩니다.
 
@@ -247,11 +247,11 @@ def create_container(self, name, ratio, command, image=None, gpu_index=None):
 - `.so` 를 이미지에 굽지 않고 **런타임에 `-v` 로 마운트**. hook 을 다시 빌드해도 이미지 재빌드가 필요 없습니다.
 - `gpu_index=None` → 전 GPU(`count=-1`), 정수면 특정 device. Stage 9 의 멀티-GPU 를 이 시그니처가 미리 수용합니다.
 
-완성본은 여기에 `quota_bytes`, `compute_ratio`(Stage 12), jupyter 포트/워크스페이스(Stage 10), 그리고 env 화이트리스트 passthrough(`_PASSTHROUGH_ENV`)가 붙습니다([docker_manager.py:67-138](../../backend/app/services/docker_manager.py#L67-L138)). 조회/정리용 `get_status`/`get_logs`/`stop_container`/`remove_container` 도 함께 있습니다([docker_manager.py:141-176](../../backend/app/services/docker_manager.py#L141-L176)).
+완성본은 여기에 `quota_bytes`, `compute_ratio`(Stage 12), jupyter 포트/워크스페이스(Stage 10), 그리고 env 화이트리스트 passthrough(`_PASSTHROUGH_ENV`)가 붙습니다([docker_manager.py:78-157](../../backend/app/services/docker_manager.py#L78-L157)). 조회/정리용 `get_status`/`get_logs`/`stop_container`/`remove_container` 도 함께 있습니다([docker_manager.py:160-201](../../backend/app/services/docker_manager.py#L160-L201)).
 
 > **레이어 규칙.** `docker_manager` 는 docker SDK 를 아는 **유일한** 파일입니다. 위층(`session_manager`)은 절대 SDK 를 직접 부르지 않고 이 래퍼를 거칩니다. 이렇게 해야 나중에 docker → containerd 같은 교체가 이 한 파일에 갇힙니다.
 
-> **함정.** `environment` 에 임의 env 를 통째로 넘기지 마세요. 완성본은 `_PASSTHROUGH_ENV` 화이트리스트로 딱 정해진 키만 전달합니다([docker_manager.py:32](../../backend/app/services/docker_manager.py#L32), [94-97](../../backend/app/services/docker_manager.py#L94-L97)). 백엔드 프로세스의 비밀 env 가 사용자 컨테이너로 새는 걸 막습니다.
+> **함정.** `environment` 에 임의 env 를 통째로 넘기지 마세요. 완성본은 `_PASSTHROUGH_ENV` 화이트리스트로 딱 정해진 키만 전달합니다([docker_manager.py:32](../../backend/app/services/docker_manager.py#L32), [106-109](../../backend/app/services/docker_manager.py#L106-L109)). 백엔드 프로세스의 비밀 env 가 사용자 컨테이너로 새는 걸 막습니다.
 
 ---
 
@@ -312,7 +312,7 @@ def create_app() -> FastAPI:
     return app
 ```
 
-완성본의 조립은 [main.py:33-92](../../backend/app/main.py#L33-L92) 입니다(SessionStore·workspace·api_token 이 추가됨).
+완성본의 조립은 [main.py:33-74](../../backend/app/main.py#L33-L74) 입니다(SessionStore·workspace·api_token 이 추가됨).
 
 ---
 
@@ -355,7 +355,7 @@ def delete_session(sid: str, mgr=Depends(_get_manager)):
     return {"deleted": sid}
 ```
 
-`_get_manager` 를 `Depends` 로 주입하는 패턴에 주목하세요. 라우터가 전역 상태를 직접 뒤지지 않고 의존성으로 받으면, 테스트에서 매니저를 갈아끼우기 쉽습니다. 완성본은 `/logs`, `/stop` 도 추가하고([sessions.py:116-133](../../backend/app/api/sessions.py#L116-L133)), 라우터 레벨에 인증 의존성(Stage 9)과 409 admission 처리(Stage 11)를 얹습니다([sessions.py:51-94](../../backend/app/api/sessions.py#L51-L94)) — 6장에서 다룹니다.
+`_get_manager` 를 `Depends` 로 주입하는 패턴에 주목하세요. 라우터가 전역 상태를 직접 뒤지지 않고 의존성으로 받으면, 테스트에서 매니저를 갈아끼우기 쉽습니다. 완성본은 `/logs`, `/stop` 도 추가하고([sessions.py:117-134](../../backend/app/api/sessions.py#L117-L134)), 라우터 레벨에 인증 의존성(Stage 9)과 409 admission 처리(Stage 11)를 얹습니다([sessions.py:51-95](../../backend/app/api/sessions.py#L51-L95)) — 6장에서 다룹니다.
 
 ### 여기서 확인 (게이트 2 — Stage 3 합격선)
 
@@ -447,9 +447,9 @@ async def get(self, sid):
     )
 ```
 
-`create` 안의 `docker.create_container` 도([session_manager.py:145-157](../../backend/app/services/session_manager.py#L145-L157)), `store.insert` 도([session_manager.py:196](../../backend/app/services/session_manager.py#L196)) 전부 `to_thread` 로 감쌉니다. 라우터 핸들러도 `async def` + `await mgr.xxx()` 로 바꿉니다([sessions.py:62-68](../../backend/app/api/sessions.py#L62-L68)).
+`create` 안의 `docker.create_container` 도([session_manager.py:211-224](../../backend/app/services/session_manager.py#L211-L224)), `store.insert` 도([session_manager.py:271](../../backend/app/services/session_manager.py#L271)) 전부 `to_thread` 로 감쌉니다. 라우터 핸들러도 `async def` + `await mgr.xxx()` 로 바꿉니다([sessions.py:62-68](../../backend/app/api/sessions.py#L62-L68)).
 
-`list_all` 은 한 걸음 더 나갑니다 — 각 record 의 reconcile 을 `asyncio.gather` 로 **동시에** 돌려 목록 응답 지연을 줄입니다([session_manager.py:226-232](../../backend/app/services/session_manager.py#L226-L232)).
+`list_all` 은 한 걸음 더 나갑니다 — 각 record 의 reconcile 을 `asyncio.gather` 로 **동시에** 돌려 목록 응답 지연을 줄입니다([session_manager.py:314-320](../../backend/app/services/session_manager.py#L314-L320)).
 
 > **함정.** "async 니까 빠르겠지" 하고 sync 함수 안에서 `to_thread` 를 빼먹으면 아무 소용 없습니다. `async def` 안에서 blocking sync 함수를 그냥 부르면 이벤트 루프가 그대로 막힙니다. 규칙은 단순합니다 — **docker SDK 호출과 sqlite3 호출은 예외 없이 `to_thread` 로 감싼다.**
 
@@ -482,7 +482,7 @@ async def get(self, sid):
     return rec
 ```
 
-완성본: [session_manager.py:200-224](../../backend/app/services/session_manager.py#L200-L224).
+완성본: [session_manager.py:288-312](../../backend/app/services/session_manager.py#L288-L312).
 
 두 가지 엣지 케이스를 이 자리에서 처리합니다.
 

@@ -64,6 +64,26 @@ PyTorch 가 cudaMalloc(2GB) 호출
 | **UI** | 단일 HTML (vanilla JS, build step 없음) | [backend/app/static/index.html](backend/app/static/index.html) |
 | **빌드 / 검증 스크립트** | 단계별 PASS/FAIL 검증 | [scripts/](scripts/) |
 | **구조 설명서** | 파일/디렉토리 책임 매트릭스 | [ARCHITECTURE.md](ARCHITECTURE.md) |
+| **학습 문서 (교과서)** | 완전 초보용 온보딩·구현 교과서 | [docs/](docs/README.md) |
+
+---
+
+## 📚 학습 문서 (교과서)
+
+코드를 보기 전에, 이 교과서로 개념부터 잡는 걸 추천합니다. **C·쉘·Docker 를 처음 접하는 완전 초보**도 읽을 수 있도록 비유·그림·단계별로 썼습니다.
+
+- **[온보딩 교과서](docs/onboarding/README.md)** — 이 프로젝트가 *무엇이고 왜* 이렇게 생겼는지 0부터 (0~10장)
+- **[밑바닥부터 만들기](docs/build-from-scratch/README.md)** — 빈 디렉토리에서 *어떻게* 다시 구현하는지 (0~8장)
+- **[심화 학습 자료](docs/study/README.md)** — 전문 챕터 모음
+
+MkDocs(Material) 로 검색·다크모드가 되는 **예쁜 사이트로도** 볼 수 있어요:
+
+```bash
+pip install mkdocs-material            # 최초 1회
+python -m mkdocs serve -a 127.0.0.1:8080   # → http://127.0.0.1:8080/
+```
+
+문서 실행·작성법 자세히 → **[docs/README.md](docs/README.md)**
 
 ---
 

@@ -7,7 +7,9 @@
       "Skill(update-config)",
       "Skill(update-config:*)",
       "Write",
-      "Edit"
+      "Edit",
+      "PowerShell(python -m mkdocs build 2>&1 | Select-String -Pattern \"ERROR|Aborted\" | Select-Object -First 3; \"--- build ok ---\"; \"backend github links in 07:\"; \\(Select-String -Path \"site\\\\onboarding\\\\07-backend-fastapi\\\\index.html\" -Pattern \"github.com/jaewoo-rain/GpuCluster/blob/main/backend\" | Measure-Object\\).Count)",
+      "PowerShell(python -m mkdocs build 2>&1 | Select-String -Pattern \"ERROR|Aborted\" | Select-Object -First 3; \"--- build ok ---\"; \"08 corrected github anchors \\(session_manager#L135, #L288\\):\"; \\(Select-String -Path \"site\\\\onboarding\\\\08-backend-lifecycle-and-admission\\\\index.html\" -Pattern \"session_manager.py#L135|session_manager.py#L288\" | Measure-Object\\).Count; \"07 main.py router #L112:\"; \\(Select-String -Path \"site\\\\onboarding\\\\07-backend-fastapi\\\\index.html\" -Pattern \"main.py#L112\" | Measure-Object\\).Count)"
     ]
   }
 }

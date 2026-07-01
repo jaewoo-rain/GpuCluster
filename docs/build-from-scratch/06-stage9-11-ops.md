@@ -59,14 +59,14 @@ router = APIRouter(prefix="/sessions", tags=["sessions"],
 
 - **빈 토큰 = 인증 비활성.** 개발 기본값입니다. `expected` 가 빈 문자열이면 즉시 `return` 해서 통과([sessions.py:32-34](../../backend/app/api/sessions.py#L32-L34)). 그래서 3장의 `smoke_test_api.sh` 가 변경 없이 계속 돕니다.
 - **`hmac.compare_digest` 로 상수 시간 비교.** `given == expected` 로 하면 문자열 앞부분만 맞아도 빨리 실패해 타이밍 공격에 정보가 샙니다. 상수 시간 비교로 이를 막습니다([sessions.py:43](../../backend/app/api/sessions.py#L43)).
-- **`/healthz` 는 인증 상태를 노출**하되 자신은 public 유지([main.py:84](../../backend/app/main.py#L84)). 운영자가 인증이 켜졌는지 확인할 수 있게.
+- **`/healthz` 는 인증 상태를 노출**하되 자신은 public 유지([main.py:105](../../backend/app/main.py#L105)). 운영자가 인증이 켜졌는지 확인할 수 있게.
 
 ### 멀티-GPU: 시그니처는 이미 준비돼 있다
 
-멀티-GPU 는 사실 3장에서 미리 깔아둔 자리에 값만 흘려보내면 됩니다. `docker_manager.create_container` 는 이미 `gpu_index` 를 받아 `--gpus device=N` 을 조립합니다([docker_manager.py:102-108](../../backend/app/services/docker_manager.py#L102-L108)). 할 일은:
+멀티-GPU 는 사실 3장에서 미리 깔아둔 자리에 값만 흘려보내면 됩니다. `docker_manager.create_container` 는 이미 `gpu_index` 를 받아 `--gpus device=N` 을 조립합니다([docker_manager.py:121-127](../../backend/app/services/docker_manager.py#L121-L127)). 할 일은:
 
 1. `SessionCreate` 에 `gpu_index: Optional[int]` 추가([session.py:47-50](../../backend/app/schemas/session.py#L47-L50)).
-2. `Session` 에도 `gpu_index` 추가(응답/영속용)([session.py:76](../../backend/app/schemas/session.py#L76)).
+2. `Session` 에도 `gpu_index` 추가(응답/영속용)([session.py:82](../../backend/app/schemas/session.py#L82)).
 3. `session_store` 에 멱등 마이그레이션 한 줄 — `ALTER TABLE sessions ADD COLUMN gpu_index INTEGER`([session_store.py:56](../../backend/app/services/session_store.py#L56)).
 4. 라우터 → 매니저 → docker_manager 로 `gpu_index` 를 관통시킴.
 
@@ -98,7 +98,7 @@ curl -X POST http://localhost:8000/sessions \
 ### 개발 순서
 
 1. `SessionCreate.mode: Literal["batch","jupyter"] = "batch"` 추가([session.py:22](../../backend/app/schemas/session.py#L22), [29-32](../../backend/app/schemas/session.py#L29-L32)). 기본이 `batch` 라 하위 호환.
-2. `build_jupyter_command(token)` — `jupyter lab` 명령 조립([docker_manager.py:38-51](../../backend/app/services/docker_manager.py#L38-L51)).
+2. `build_jupyter_command(token)` — `jupyter lab` 명령 조립([docker_manager.py:49-62](../../backend/app/services/docker_manager.py#L49-L62)).
 3. 매니저의 `create` 에서 mode 분기: jupyter 면 토큰 생성 + 워크스페이스 디렉토리 + 포트 publish.
 4. **spawn 후 ephemeral 포트를 재시도 루프로 발견.** ← 가장 까다로운 부분.
 5. `jupyter_url` 조립 + 관련 필드 영속(스키마 + 마이그레이션).
@@ -124,11 +124,11 @@ else:
     jupyter_mode = False
 ```
 
-완성본: [session_manager.py:122-142](../../backend/app/services/session_manager.py#L122-L142).
+완성본: [session_manager.py:180-206](../../backend/app/services/session_manager.py#L180-L206).
 
 - `secrets.token_urlsafe(24)` — 세션마다 예측 불가능한 토큰. 이게 Jupyter 접속 인증이 됩니다.
 - `ports = {"8888/tcp": None}` — `None` 이 "호스트 포트를 docker 가 알아서 골라라(ephemeral)"라는 뜻입니다. 우리가 포트를 고정하지 않는 이유는 여러 세션이 동시에 뜰 때 충돌을 피하기 위함입니다.
-- 워크스페이스 디렉토리를 호스트에 만들어 `/workspace` 로 bind-mount([docker_manager.py:119-123](../../backend/app/services/docker_manager.py#L119-L123)). 컨테이너를 지워도 노트북이 살아남습니다.
+- 워크스페이스 디렉토리를 호스트에 만들어 `/workspace` 로 bind-mount([docker_manager.py:138-142](../../backend/app/services/docker_manager.py#L138-L142)). 컨테이너를 지워도 노트북이 살아남습니다.
 
 ### 까다로운 부분: ephemeral 포트 발견 재시도 루프
 
@@ -148,13 +148,13 @@ if jupyter_mode:
         jupyter_url = f"http://{_PUBLIC_HOST}:{host_port}/lab?token={jupyter_token}"
 ```
 
-완성본: [session_manager.py:162-176](../../backend/app/services/session_manager.py#L162-L176). `get_host_port` 는 `NetworkSettings.Ports["8888/tcp"][0]["HostPort"]` 를 읽습니다([docker_manager.py:146-160](../../backend/app/services/docker_manager.py#L146-L160)).
+완성본: [session_manager.py:240-251](../../backend/app/services/session_manager.py#L240-L251). `get_host_port` 는 `NetworkSettings.Ports["8888/tcp"][0]["HostPort"]` 를 읽습니다([docker_manager.py:165-179](../../backend/app/services/docker_manager.py#L165-L179)).
 
 > **함정.** 첫 시도(`delay=0.0`)에 바로 성공한다고 가정하면 가끔 `host_port=None` 인 세션이 나옵니다. 재시도 루프가 없으면 개발 중엔 대부분 되다가 부하가 있을 때 간헐적으로 실패합니다 — 재현이 어려운 가장 나쁜 버그입니다. 처음부터 백오프를 넣으세요. 반대로 무한 재시도도 금물 — 진짜 실패(포트 publish 자체가 안 됨) 시 create 가 영영 안 끝납니다. 유한한 백오프 리스트로 상한을 둡니다.
 
 ### 워크스페이스는 삭제하지 않는 것이 기본
 
-`DELETE /sessions/{id}` 는 컨테이너와 record 는 지우지만 워크스페이스 디렉토리는 **보존**합니다(노트북은 사용자 데이터). 명시적으로 `?purge_workspace=true` 를 줘야 삭제합니다([session_manager.py:256-273](../../backend/app/services/session_manager.py#L256-L273), [sessions.py:136-150](../../backend/app/api/sessions.py#L136-L150)).
+`DELETE /sessions/{id}` 는 컨테이너와 record 는 지우지만 워크스페이스 디렉토리는 **보존**합니다(노트북은 사용자 데이터). 명시적으로 `?purge_workspace=true` 를 줘야 삭제합니다([session_manager.py:344-361](../../backend/app/services/session_manager.py#L344-L361), [sessions.py:137-151](../../backend/app/api/sessions.py#L137-L151)).
 
 ### 여기서 확인 (Stage 10 게이트)
 
@@ -255,7 +255,7 @@ class SessionManager:
         # ... 여기서 컨테이너 spawn + store.insert
 ```
 
-완성본: [session_manager.py:82-116](../../backend/app/services/session_manager.py#L82-L116).
+완성본: [session_manager.py:135-171](../../backend/app/services/session_manager.py#L135-L171).
 
 ### 왜 Lock 이 없으면 오버서브되는가 (손으로 재현)
 
@@ -272,7 +272,7 @@ class SessionManager:
 
 `asyncio.Lock` 으로 `check → spawn → insert` 전체를 하나의 임계 구역으로 묶으면, B 는 A 가 insert 를 끝낼 때까지 기다렸다가 `list_all()` 에서 A 를 보고 `0.6+0.6 > 1.0` 으로 거부됩니다. 정확히 하나만 통과합니다.
 
-> **함정.** `to_thread` 는 이벤트 루프를 안 막지만(좋음), 바로 그 때문에 락 없는 check-then-insert 가 더 쉽게 깨집니다. "async 로 만들었으니 동시성 안전"이 아니라, **check 와 insert 를 원자적으로 묶어야** 안전합니다. 반대로 Lock 을 `docker.run` 을 포함한 전 구간에 걸어도 `docker.run` 자체는 `to_thread` 안에서 돌므로 이벤트 루프는 계속 다른 종류의 요청(GET, healthz)을 처리합니다 — 직렬화되는 건 오직 create 끼리입니다([session_manager.py:69-73](../../backend/app/services/session_manager.py#L69-L73)).
+> **함정.** `to_thread` 는 이벤트 루프를 안 막지만(좋음), 바로 그 때문에 락 없는 check-then-insert 가 더 쉽게 깨집니다. "async 로 만들었으니 동시성 안전"이 아니라, **check 와 insert 를 원자적으로 묶어야** 안전합니다. 반대로 Lock 을 `docker.run` 을 포함한 전 구간에 걸어도 `docker.run` 자체는 `to_thread` 안에서 돌므로 이벤트 루프는 계속 다른 종류의 요청(GET, healthz)을 처리합니다 — 직렬화되는 건 오직 create 끼리입니다([session_manager.py:81-85](../../backend/app/services/session_manager.py#L81-L85)).
 
 ### 409 응답 구조
 
@@ -291,7 +291,7 @@ except AdmissionDenied as e:
     })
 ```
 
-완성본: [sessions.py:78-91](../../backend/app/api/sessions.py#L78-L91). `available` 을 함께 주니 클라이언트가 "얼마면 통과되는지"를 바로 알 수 있습니다. 현황 조회용 `GET /sessions/admission` 도 추가합니다([sessions.py:97-100](../../backend/app/api/sessions.py#L97-L100), [session_manager.py:76-79](../../backend/app/services/session_manager.py#L76-L79)).
+완성본: [sessions.py:79-92](../../backend/app/api/sessions.py#L79-L92). `available` 을 함께 주니 클라이언트가 "얼마면 통과되는지"를 바로 알 수 있습니다. 현황 조회용 `GET /sessions/admission` 도 추가합니다([sessions.py:98-101](../../backend/app/api/sessions.py#L98-L101), [session_manager.py:129-132](../../backend/app/services/session_manager.py#L129-L132)).
 
 ### 여기서 확인 (Stage 11 게이트)
 

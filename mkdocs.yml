@@ -1,6 +1,11 @@
 site_name: fGPU 교과서
 site_description: LD_PRELOAD 기반 분수 GPU(fractional GPU) 프로토타입 학습 문서
 docs_dir: docs
+# docs/README.md 는 GitHub 에서 docs/ 폴더 열 때 보여줄 개발자용 안내서.
+# 사이트 홈은 index.md 가 담당하므로, 최상위 README 만 사이트 빌드에서 제외한다.
+# (onboarding/README.md 등 하위 목차 README 는 그대로 페이지로 포함)
+exclude_docs: |
+  /README.md
 repo_url: https://github.com/jaewoo-rain/GpuCluster
 repo_name: jaewoo-rain/GpuCluster
 edit_uri: edit/main/docs/

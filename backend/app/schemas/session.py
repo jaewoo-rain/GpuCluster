@@ -58,6 +58,12 @@ class SessionCreate(BaseModel):
         description="Stage 11 admission control 우회. True 이면 sum(ratios) > 1.0 "
                     "이어도 세션 생성 허용 (oversubscription 데모용).",
     )
+    env: Optional[dict[str, str]] = Field(
+        default=None,
+        description="컨테이너에 추가로 주입할 환경변수. 워크로드 파라미터 전달용 "
+                    "(예: ALLOC_MIB, HOLD_SEC, PYTEST_*). hook 핵심 env "
+                    "(LD_PRELOAD / FGPU_RATIO 등 예약어) 는 보호되어 덮어쓸 수 없음.",
+    )
 
 
 class Session(BaseModel):

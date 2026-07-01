@@ -31,6 +31,17 @@ from docker.types import DeviceRequest
 # 별로 통제하기 위함. 명시적 화이트리스트라 임의 env leak 방지.
 _PASSTHROUGH_ENV = ("FGPU_LAUNCH_LOG_EVERY", "FGPU_WINDOW_MS")
 
+# 사용자 제공 env (SessionCreate.env) 가 절대 덮어쓸 수 없는 예약 키.
+# hook 동작 자체를 비활성/우회시키는 것을 막기 위함 — 사용자가 LD_PRELOAD 를
+# 비우거나 FGPU_RATIO 를 1.0 으로 바꿔 quota 를 무력화하는 것을 차단.
+_RESERVED_ENV = (
+    "LD_PRELOAD",
+    "FGPU_RATIO",
+    "FGPU_QUOTA_BYTES",
+    "FGPU_THROTTLE_ENABLE",
+    "FGPU_COMPUTE_RATIO",
+)
+
 # Jupyter Lab 컨테이너 내부 포트. 호스트로는 ephemeral port 로 publish.
 _JUPYTER_CONTAINER_PORT = 8888
 
@@ -76,6 +87,7 @@ class DockerManager:
         jupyter_mode: bool = False,
         workspace_host_dir: Optional[str] = None,
         ports: Optional[dict] = None,
+        env_extra: Optional[dict] = None,
     ):
         env = {
             "FGPU_RATIO": str(ratio),
@@ -95,6 +107,13 @@ class DockerManager:
             v = os.environ.get(key)
             if v is not None and key not in env:
                 env[key] = v
+
+        # 사용자 제공 env (워크로드 파라미터). 예약 키는 무시해 hook 보호.
+        if env_extra:
+            for k, v in env_extra.items():
+                if k in _RESERVED_ENV:
+                    continue
+                env[str(k)] = str(v)
 
         # docker run --gpus all 또는 --gpus device=N 패턴.
         # gpu_index=None → count=-1 (전 GPU 노출, 기본 동작).
@@ -171,5 +190,59 @@ class DockerManager:
         c.stop(timeout=timeout)
 
     def remove_container(self, container_id: str, force: bool = True) -> None:
+        """컨테이너를 제거한다.
+
+        container_id 가 docker daemon 에 없으면 docker.errors.NotFound 를 raise 한다.
+        호출측(SessionManager 보상정리 / reconcile_orphans) 에서 NotFound 를 swallow 해야 한다.
+
+        daemon 이 다운된 경우 등 기타 docker 예외도 올라올 수 있다.
+        """
         c = self.client.containers.get(container_id)
         c.remove(force=force)
+
+    # ---- orphan sweep ------------------------------------------------ #
+    def list_fgpu_containers(self) -> list[dict]:
+        """docker daemon 에서 fgpu- prefix 컨테이너를 전부 조회한다.
+
+        종료된 컨테이너(exited/dead)도 포함한다(all=True).
+        name 필터는 docker 의 substring 매칭이므로 fgpu- 가 이름에 포함된
+        컨테이너를 반환한다. 우리 컨테이너는 항상 fgpu-<session_id> 형식으로
+        이름이 붙으므로 실질적으로 정확하게 걸린다.
+
+        반환값: 각 항목이 다음 키를 가지는 list[dict].
+            {
+                "id":         str,           # container.id (full 64자 hex)
+                "name":       str,           # container.name (슬래시 미포함)
+                "status":     str,           # "running" / "exited" / "created" 등
+                "started_at": str | None,    # State.StartedAt ISO8601 문자열,
+                                             # 없으면 None (아직 시작 안 된 경우)
+            }
+
+        개별 항목 파싱 실패(KeyError 등)는 해당 항목만 건너뛴다.
+        docker daemon 자체 오류는 예외를 그대로 전파한다(빈 리스트 반환 안 함).
+        호출측(SessionManager.reconcile_orphans)이 daemon 예외를 catch/log 해야 한다.
+        """
+        containers = self.client.containers.list(
+            all=True,
+            filters={"name": "fgpu-"},
+        )
+
+        result = []
+        for c in containers:
+            try:
+                # list() 응답의 attrs 에는 통상 State 가 포함되어 있다.
+                # 누락이나 형식 이상에 대비해 get() 으로 안전하게 읽는다.
+                started_at = c.attrs.get("State", {}).get("StartedAt") or None
+                # docker 는 name 에 앞에 "/" 를 붙이는 경우가 있다.
+                name = c.name.lstrip("/")
+                result.append({
+                    "id":         c.id,
+                    "name":       name,
+                    "status":     c.status,
+                    "started_at": started_at,
+                })
+            except Exception:
+                # 이 컨테이너 파싱만 건너뜀. 나머지는 계속.
+                continue
+
+        return result

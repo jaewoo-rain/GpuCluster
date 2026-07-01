@@ -74,6 +74,7 @@ async def create_session(
             gpu_index=body.gpu_index,
             compute_ratio=body.compute_ratio,
             force=body.force,
+            env=body.env,
         )
     except AdmissionDenied as e:
         # Stage 11: sum(ratios) > 1.0 거부. 클라이언트가 force=true 로 재시도 가능.

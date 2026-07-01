@@ -111,9 +111,18 @@ fi
 echo "  OK — 모든 빌드 완료"
 
 # ---------- backend-less stages ----------
-pattern_check stage1_host \
-    "${ROOT_DIR}/scripts/run_test.sh" \
-    -- '\[fgpu\] DENY'
+# stage1_host 는 호스트 nvcc 로 test 바이너리를 컴파일·실행한다. 호스트에
+# CUDA 툴킷이 없는 환경 (WSL2 / Docker Desktop 등) 에서는 nvcc 가 없으므로
+# skip — 동일한 hook DENY 검증은 컨테이너에서 stage2_container 가 이미 수행.
+if command -v nvcc >/dev/null 2>&1 || [[ -x "${CUDA_HOME:-/usr/local/cuda}/bin/nvcc" ]]; then
+    pattern_check stage1_host \
+        "${ROOT_DIR}/scripts/run_test.sh" \
+        -- '\[fgpu\] DENY'
+else
+    echo
+    echo "=== stage1_host ==="
+    record_skip stage1_host "host nvcc 없음 — 컨테이너(stage2)가 동일 검증 수행"
+fi
 
 pattern_check stage2_container \
     "${ROOT_DIR}/scripts/run_in_container.sh" \

@@ -3,13 +3,11 @@
     "allow": [
       "Bash(wsl --list --verbose)",
       "Bash(wsl:*)",
-      "PowerShell(pip install mkdocs-material 2>&1)",
-      "PowerShell(python -m mkdocs build 2>&1 | Out-File -FilePath \"$env:TEMP\\\\mkdocs_build.log\" -Encoding utf8; Get-Content \"$env:TEMP\\\\mkdocs_build.log\" -Encoding utf8 | Select-Object -Last 20)",
-      "PowerShell(Get-Content \"$env:TEMP\\\\mkdocs_build.log\" -Encoding utf8 | Select-Object -First 12)",
-      "PowerShell(python -m mkdocs serve -a 127.0.0.1:8000)",
-      "PowerShell(python -m mkdocs serve -a 127.0.0.1:8080)",
-      "PowerShell(Start-Sleep -Seconds 4; try { $r = Invoke-WebRequest -Uri \"http://127.0.0.1:8080/\" -UseBasicParsing -TimeoutSec 5; \"HTTP $\\($r.StatusCode\\) — site is up\"; if \\($r.Content -match \"fGPU 교과서\"\\) { \"landing page title OK\" } } catch { \"not reachable yet: $\\($_.Exception.Message\\)\" })",
-      "PowerShell(try { $r = Invoke-WebRequest -Uri \"http://127.0.0.1:8080/onboarding/05-cuda-layers-and-hook-walkthrough/\" -UseBasicParsing -TimeoutSec 5; if \\($r.Content -match \"github.com/jaewoo-rain/GpuCluster/blob/main/hook\"\\) { \"LIVE: 코드 링크가 GitHub 주소로 변환되어 서빙 중 \\(HTTP $\\($r.StatusCode\\)\\)\" } else { \"서버는 떴으나 아직 이전 빌드 — 재시작 필요\" } } catch { \"서버 응답 없음: $\\($_.Exception.Message\\)\" })"
+      "WebSearch",
+      "Skill(update-config)",
+      "Skill(update-config:*)",
+      "Write",
+      "Edit"
     ]
   }
 }

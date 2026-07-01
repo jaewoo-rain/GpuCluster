@@ -59,7 +59,8 @@ post_session() {
 {
   "ratio": ${ratio},
   "image": "${IMAGE}",
-  "command": ["python3","/opt/fgpu/test_hold.py"]
+  "command": ["python3","/opt/fgpu/test_hold.py"],
+  "env": {"ALLOC_MIB": "${ALLOC_MIB}", "HOLD_SEC": "${HOLD_SEC}"}
 }
 EOF
 )"

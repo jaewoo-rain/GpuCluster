@@ -1,6 +1,9 @@
 # Build artifacts
 build/
 
+# MkDocs generated site
+site/
+
 # Persisted runtime state (Stage 8 — sessions.db, etc.)
 data/
 

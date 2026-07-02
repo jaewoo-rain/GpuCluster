@@ -1,0 +1,112 @@
+site_name: fGPU 교과서
+site_description: LD_PRELOAD 기반 분수 GPU(fractional GPU) 프로토타입 학습 문서
+docs_dir: docs
+# docs/README.md 는 GitHub 에서 docs/ 폴더 열 때 보여줄 개발자용 안내서.
+# 사이트 홈은 index.md 가 담당하므로, 최상위 README 만 사이트 빌드에서 제외한다.
+# (onboarding/README.md 등 하위 목차 README 는 그대로 페이지로 포함)
+exclude_docs: |
+  /README.md
+repo_url: https://github.com/jaewoo-rain/GpuCluster
+repo_name: jaewoo-rain/GpuCluster
+edit_uri: edit/main/docs/
+
+hooks:
+  - mkdocs_hooks.py
+
+theme:
+  name: material
+  language: ko
+  icon:
+    logo: material/expansion-card-variant
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: 다크 모드로 전환
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: 라이트 모드로 전환
+  features:
+    - navigation.instant
+    - navigation.instant.progress
+    - navigation.tracking
+    - navigation.top
+    - navigation.footer
+    - navigation.indexes
+    - toc.follow
+    - content.code.copy
+    - content.code.annotate
+    - content.action.view
+    - search.suggest
+    - search.highlight
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - footnotes
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - toc:
+      permalink: true
+      permalink_title: 이 섹션 링크
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
+
+plugins:
+  - search
+
+validation:
+  nav:
+    omitted_files: info
+    not_found: warn
+  links:
+    not_found: ignore
+    unrecognized_links: ignore
+    absolute_links: ignore
+
+nav:
+  - 홈: index.md
+  - 온보딩 교과서 (이해용):
+      - 소개: onboarding/README.md
+      - 0장 · 시작하기 전에: onboarding/00-welcome.md
+      - 1장 · C 언어 기초: onboarding/01-c-language-basics.md
+      - 2장 · 쉘 스크립트: onboarding/02-shell-scripts.md
+      - 3장 · Docker와 GPU: onboarding/03-docker-and-gpu.md
+      - 4장 · LD_PRELOAD와 dlsym: onboarding/04-ld-preload-and-dlsym.md
+      - 5장 · 훅 코드 완전 분해: onboarding/05-cuda-layers-and-hook-walkthrough.md
+      - 6장 · 스레드 안전성: onboarding/06-thread-safety.md
+      - 7장 · FastAPI 백엔드: onboarding/07-backend-fastapi.md
+      - 8장 · 세션 생명주기: onboarding/08-backend-lifecycle-and-admission.md
+      - 9장 · 빌드·실행·검증: onboarding/09-build-run-verify.md
+      - 10장 · 전체를 하나로: onboarding/10-putting-it-together.md
+  - 밑바닥부터 만들기 (구현용):
+      - 소개: build-from-scratch/README.md
+      - 0장 · 개발 로드맵과 환경 준비: build-from-scratch/00-roadmap-and-setup.md
+      - 1장 · Stage 1 최소 훅: build-from-scratch/01-stage1-minimal-hook.md
+      - 2장 · Stage 2·4 컨테이너·PyTorch: build-from-scratch/02-stage2-4-container-pytorch.md
+      - 3장 · Stage 3·8 백엔드: build-from-scratch/03-stage3-8-backend.md
+      - 4장 · Stage 5 평가·UI: build-from-scratch/04-stage5-eval-and-ui.md
+      - 5장 · Stage 5C·6·7 훅 확장: build-from-scratch/05-stage5c-6-7-hook-expansion.md
+      - 6장 · Stage 9·10·11 운영: build-from-scratch/06-stage9-11-ops.md
+      - 7장 · Stage 12 스로틀: build-from-scratch/07-stage12-throttle.md
+      - 8장 · 종합 체크리스트: build-from-scratch/08-synthesis-checklist.md

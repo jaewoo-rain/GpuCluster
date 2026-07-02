@@ -186,6 +186,18 @@ static int          g_atexit_registered = 0;
  *                          둘 다 "지금" 으로 설정하므로 무해.
  *   g_throttle_count     : 총 sleep 횟수 — 통계용.
  *   g_throttle_log_every : N 번 sleep 마다 로그 출력. 0 = off.
+ *
+ *   (anti-phase 확장)
+ *   g_throttle_algo      : 0 = dutycycle(기본), 1 = antiphase.
+ *                          dutycycle = per-process 윈도우(상대 컨테이너 모름).
+ *                          antiphase = CLOCK_REALTIME 절대시각 기준으로
+ *                          윈도우 경계를 자동 동기화하고, 각 컨테이너가
+ *                          [offset, offset+ratio) 슬롯에서만 launch 통과.
+ *                          오프셋을 누적 비율로 배정하면 슬롯이 겹치지 않게
+ *                          타일링 → 매 순간 최대 1명만 활성, 둘 다 idle 없음.
+ *   g_compute_offset     : 내 슬롯 시작 오프셋 (0.0~1.0). antiphase 전용.
+ *                          예) A: ratio 0.4 offset 0.0 → [0ms,40ms)
+ *                              B: ratio 0.6 offset 0.4 → [40ms,100ms)
  * ===================================================================== */
 static int          g_throttle_enable    = 0;
 static double       g_compute_ratio      = 1.0;
@@ -193,6 +205,8 @@ static int64_t      g_window_ns          = 100000000LL;  /* 100ms default */
 static int64_t      g_window_start_ns    = 0;
 static size_t       g_throttle_count     = 0;
 static unsigned int g_throttle_log_every = 100;
+static int          g_throttle_algo      = 0;     /* 0=dutycycle, 1=antiphase */
+static double       g_compute_offset     = 0.0;   /* antiphase 슬롯 시작 오프셋 */
 
 static void fgpu_launch_atexit_dump(void) {
     /* atexit 호출 시점엔 다른 thread 가 hook 진입 중일 수 있으나,
@@ -369,6 +383,21 @@ static void fgpu_init_locked(void) {
         g_throttle_log_every = (v >= 0) ? (unsigned int)v : 100;
     }
 
+    /* (d-ter) anti-phase throttle 환경변수.
+     *   FGPU_THROTTLE_ALGO    : "dutycycle"(기본) | "antiphase"
+     *   FGPU_COMPUTE_OFFSET   : 내 슬롯 시작 오프셋 (0.0~1.0, 기본 0.0).
+     *                           antiphase 일 때만 의미 있음. */
+    const char *ta_env = getenv("FGPU_THROTTLE_ALGO");
+    if (ta_env && strcmp(ta_env, "antiphase") == 0)
+        g_throttle_algo = 1;
+
+    const char *co_env = getenv("FGPU_COMPUTE_OFFSET");
+    if (co_env) {
+        g_compute_offset = atof(co_env);
+        if (g_compute_offset < 0.0 || g_compute_offset >= 1.0)
+            g_compute_offset = 0.0;
+    }
+
     /* (e) atexit 으로 누적 launch 수의 최종 dump 등록 — 한 번만. */
     if (!g_atexit_registered) {
         atexit(fgpu_launch_atexit_dump);
@@ -391,9 +420,12 @@ static void fgpu_init_locked(void) {
             "[fgpu] init: launch_log_every=%u (0=off)\n",
             g_launch_log_every);
     fprintf(stderr,
-            "[fgpu] init: throttle=%s compute_ratio=%.3f window_ms=%ld\n",
+            "[fgpu] init: throttle=%s algo=%s compute_ratio=%.3f "
+            "offset=%.3f window_ms=%ld\n",
             g_throttle_enable ? "on" : "off",
+            g_throttle_algo ? "antiphase" : "dutycycle",
             g_compute_ratio,
+            g_compute_offset,
             (long)(g_window_ns / 1000000LL));
 
     g_inited = 1;
@@ -776,7 +808,8 @@ cudaError_t cudaLaunchKernel(const void *func, dim3 gridDim, dim3 blockDim,
      * 윈도우(기본 100ms) 내에서 compute_ratio × window 시간만 launch 허용,
      * 나머지는 nanosleep 으로 대기. launch 자체는 드롭하지 않음 —
      * real_cudaLaunchKernel 은 항상 호출된다. */
-    if (g_throttle_enable && g_compute_ratio < 1.0) {
+    if (g_throttle_enable && g_compute_ratio < 1.0 && g_throttle_algo == 0) {
+        /* --- algo 0: duty-cycle (per-process 윈도우, 상대 컨테이너 모름) --- */
         struct timespec now_ts;
         clock_gettime(CLOCK_MONOTONIC, &now_ts);
         int64_t now_ns = (int64_t)now_ts.tv_sec * 1000000000LL + now_ts.tv_nsec;
@@ -812,6 +845,50 @@ cudaError_t cudaLaunchKernel(const void *func, dim3 gridDim, dim3 blockDim,
             if (g_throttle_log_every > 0 && (tc % g_throttle_log_every) == 0)
                 fprintf(stderr, "[fgpu] THROTTLE sleep=%ldms count=%zu\n",
                         (long)(sleep_ns / 1000000L), tc);
+        }
+    } else if (g_throttle_enable && g_compute_ratio < 1.0 && g_throttle_algo == 1) {
+        /* --- algo 1: anti-phase (절대시각 윈도우 + 슬롯 게이팅) ---
+         * 핵심: 윈도우 경계를 CLOCK_REALTIME(절대시각) % window 로 잡으면
+         * 모든 컨테이너가 별도 통신 없이 같은 윈도우 격자를 공유한다.
+         * 각 컨테이너는 윈도우 안에서 [s0, s1) = [offset, offset+ratio)
+         * 구간에서만 launch 통과. 오프셋을 누적 비율로 배정하면 슬롯이
+         * 겹치지 않게 타일링되어 "둘 다 쉬는" idle 이 사라진다.
+         *
+         * 합 < 1.0 인 경우: [0, sum) 만 덮이고 [sum, 1) 구간은 아무도 안 도는
+         * '의도된 idle'(예약했으나 안 씀). work-conserving 으로 메우는 건
+         * 별도 후속 작업. 본 실험(합=1.0)에선 틈 없음. */
+        double W   = (double)g_window_ns;
+        double s0  = g_compute_offset * W;
+        double s1  = (g_compute_offset + g_compute_ratio) * W;
+        if (s1 > W) s1 = W;  /* 윈도우를 넘는 슬롯은 잘라낸다 */
+
+        struct timespec now_ts;
+        clock_gettime(CLOCK_REALTIME, &now_ts);
+        int64_t now_ns = (int64_t)now_ts.tv_sec * 1000000000LL + now_ts.tv_nsec;
+        double phase = (double)(now_ns % g_window_ns);
+
+        if (phase >= s0 && phase < s1) {
+            /* 내 슬롯 안 → 통과 (sleep 없음) */
+        } else {
+            /* 내 슬롯 밖 → 내 다음 슬롯 시작까지 sleep.
+             *   phase < s0 : 이번 윈도우의 내 슬롯이 아직 안 옴 → s0 - phase
+             *   phase >= s1: 내 슬롯 지남 → 다음 윈도우의 s0 까지 = (W-phase)+s0 */
+            double wait = (phase < s0) ? (s0 - phase) : ((W - phase) + s0);
+            int64_t sleep_ns = (int64_t)wait;
+            if (sleep_ns > 0) {
+                struct timespec sleep_ts = {
+                    .tv_sec  = sleep_ns / 1000000000LL,
+                    .tv_nsec = sleep_ns % 1000000000LL,
+                };
+                nanosleep(&sleep_ts, NULL);
+
+                size_t tc = __atomic_add_fetch(&g_throttle_count, 1,
+                                               __ATOMIC_RELAXED);
+                if (g_throttle_log_every > 0 && (tc % g_throttle_log_every) == 0)
+                    fprintf(stderr,
+                            "[fgpu] THROTTLE(antiphase) sleep=%ldms count=%zu\n",
+                            (long)(sleep_ns / 1000000L), tc);
+            }
         }
     }
 
